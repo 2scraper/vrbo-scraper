@@ -1,0 +1,4 @@
+playwright>=1.40.0
+twocaptcha-python>=1.2.0
+selenium>=4.15.0
+undetected-chromedriver>=3.5.0
