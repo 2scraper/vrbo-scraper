@@ -106,18 +106,20 @@ DEFAULT_BROWSER_CHANNEL = "chrome"
 
 # How long to wait for a remote browser to accept the CDP connection.
 #
-# 150s, not the 30s this family shipped, and the difference is measured. A
-# Scraping Browser endpoint provisions a browser ON DEMAND when the WebSocket
-# upgrade arrives, and that upgrade was observed hanging for **121 seconds**
-# before the server itself hung up. A 30s client timeout therefore abandons a
-# session the server is still setting up — and the profile stays HELD by the
-# half-open session: every subsequent attempt, over WebSocket and over the
-# endpoint's own HTTP sibling alike, answered `500 profile_locked`, and it did
-# not clear in twenty minutes.
+# 150s, not the 30s this family shipped. What is MEASURED is narrow and
+# arithmetic: against a live Scraping Browser endpoint the WebSocket upgrade
+# hung for **121 seconds** before the SERVER hung up, so a 30s client timeout
+# gives up while the server is still working. Sitting above the server's own
+# give-up point means the client is never the one that walks away first.
 #
-# So the old default did not merely fail early, it could WEDGE THE PROFILE
-# it failed on. Sitting above the server's own give-up point means the client
-# is never the one that walks away first.
+# What is NOT established, and was claimed here for one commit before the
+# evidence contradicted it: that giving up early is what leaves a profile
+# stuck at `profile_locked`. Two profiles were observed locked and not
+# clearing (one for over forty minutes, one after four minutes of complete
+# silence), and the second locked INSTANTLY on its first WebSocket attempt —
+# with no timed-out connect anywhere in its history. So the lock has some
+# other cause, and this timeout is not a fix for it. Raising it is still
+# right; expecting it to unwedge anything is not.
 CDP_CONNECT_TIMEOUT_MS = 150_000
 
 
@@ -472,13 +474,15 @@ def _connect_remote(pw, args):
             f"{_mask_credentials(args.cdp_endpoint)}: "
             f"{_mask_credentials(str(e))}\n"
             f"A Scraping Browser profile allows ONE live connection at a "
-            f"time, so `profile_locked` here means something still holds this "
-            f"`pid`. That something can be THIS tool: a connect that gives up "
-            f"before the server does leaves the session half-open and the "
-            f"profile wedged — measured locked for over twenty minutes "
-            f"afterwards, on the endpoint's HTTP sibling as well as over "
-            f"WebSocket. If that has happened, --cdp-connect-timeout is the "
-            f"knob; otherwise use a different pid."
+            f"time, so `profile_locked` means something holds this `pid`.\n"
+            f"Worth knowing before you go looking for it on your side: two "
+            f"profiles were observed here entering that state and NOT leaving "
+            f"it — one for over forty minutes, one still locked after four "
+            f"minutes of no requests at all, having locked on its very first "
+            f"connection attempt. Waiting did not clear either. If that is "
+            f"what you are seeing, it is not another run of this tool holding "
+            f"it, and nothing on this side will free it: use a different pid, "
+            f"or reset the profile from the 2Captcha dashboard."
         ) from None
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()

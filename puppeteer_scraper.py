@@ -82,10 +82,10 @@ THIN_PAGE_SHARE = 0.6
 # not cover a browser that has stopped answering at all.
 DEFAULT_OP_TIMEOUT = 120
 # 150, not 30, and kept identical to the Playwright engine's
-# CDP_CONNECT_TIMEOUT_MS — see its comment for the measurement. Short version:
-# a Scraping Browser provisions on the WebSocket upgrade, that upgrade was
-# measured hanging 121s before the SERVER hung up, and a client that walks
-# away first leaves the profile wedged at `profile_locked`.
+# CDP_CONNECT_TIMEOUT_MS — see its comment. Short version: the upgrade was
+# measured hanging 121s before the SERVER hung up, so 30s gives up while the
+# server is still working. It is NOT a cure for `profile_locked`, which was
+# observed with no timed-out connect in its history at all.
 CONNECT_TIMEOUT = 150
 
 

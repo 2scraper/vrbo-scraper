@@ -181,44 +181,43 @@ wrong behaviour.
 
 ## "`--cdp-endpoint` says `profile_locked` and never clears"
 
-A Scraping Browser profile allows **one live connection**, and the thing
-holding it can be this tool.
+A Scraping Browser profile allows **one live connection**, so the obvious
+reading is that another run holds it. Two profiles measured here say that is
+not always what is happening.
 
-Measured 2026-09-14 against a live endpoint. The credential was fine — the
-endpoint's HTTP sibling answered `200` with `Chrome/151.0.7922.174` on the
-first call. But the WebSocket upgrade, which is what actually provisions the
-browser, **hung for 121 seconds and then the server hung up**. After that the
-profile reported `500 profile_locked` on *both* the WebSocket and the HTTP
-endpoint, and had not cleared twenty minutes later.
+What was observed, 2026-09-14, against a live endpoint:
 
-So a client that gives up before the server does leaves a half-open session
-that wedges the profile. The default connect timeout is now **150s**, above
-the server's own give-up point, so the client is never the one to walk away
-first:
+* the credential was fine — the endpoint's HTTP sibling answered `200` with
+  `Chrome/151.0.7922.174`;
+* on the first profile, the WebSocket upgrade **hung for 121 seconds** and
+  then the server hung up. Afterwards it answered `500 profile_locked` on
+  both WebSocket and HTTP, and had **not cleared forty minutes later**;
+* a second, fresh profile answered `500 profile_locked` on its **very first
+  connection attempt**, and was still locked after four minutes of no
+  requests at all.
 
-```bash
---cdp-connect-timeout 150     # the default; raise it if your endpoint is slower
-```
+So: waiting does not clear it, and it is not necessarily another run of this
+tool. **Nothing on the client side frees a profile in that state** — use a
+different `pid`, or reset the profile from the 2Captcha dashboard.
 
-If a profile is already wedged, nothing on this side will free it — use a
-different `pid`, or reset the profile from the 2Captcha dashboard. A quick
-way to tell a wedged profile from a bad credential without taking the lock
-again, since a plain HTTP GET does not provision anything:
+### Do NOT poll the HTTP endpoint to check
 
-```bash
-python3 - <<'EOF'
-import os, requests
-from urllib.parse import urlsplit
-p = urlsplit(os.environ["VRBO_CDP_ENDPOINT"])
-r = requests.get(f"http://{p.hostname}:{p.port}/json/version",
-                 auth=(p.username, p.password), timeout=30)
-print(r.status_code, r.text[:120])
-EOF
-```
+An earlier version of this section suggested a "non-destructive" `GET
+/json/version` to see whether a profile is free. Treat that as unsafe: on
+both profiles the first such call answered `200` and everything afterwards
+was locked. Whether the GET itself claims the profile was not established —
+but it is consistent with what was seen, and polling it is exactly what was
+being done to the profile that never recovered. If you want to know whether a
+profile is free, try the connection you actually want and read the error.
 
-`200` plus a Chrome version means the credential is good and the profile is
-free. `500 profile_locked` means it is held. `401` means the credential is
-wrong.
+### What `--cdp-connect-timeout` is and is not for
+
+The default is **150s**, up from the 30s this repo family shipped, because
+the server's own give-up point was measured at 121s and a client that quits
+first quits while the server is still working.
+
+It is **not** a cure for `profile_locked`. The second profile above locked
+instantly, with no timed-out connect anywhere in its history.
 
 ---
 
