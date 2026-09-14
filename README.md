@@ -362,41 +362,49 @@ nothing to solve:
   and replays at another against vrbo.com. This is reasoning from DataDome's
   model and that API signature, not a measurement.
 
-And when the solve was actually attempted end to end, it did not succeed.
-Measured 2026-09-14, on a challenge induced deliberately on an exit under our
-own control (a bundled Chromium through a residential proxy — this site
-refuses that browser, which makes it a reliable challenge generator without
-hammering anything):
+And the solve was then run end to end, three times, on challenges induced
+deliberately on an exit under our own control. A bundled Chromium through a
+residential proxy is a reliable challenge generator here — this site refuses
+that browser build — so no extra load was put on the site to produce one.
 
 ```
-challenge induced          HTTP 429, DataDome
-captchaUrl from the live
-  widget, 3s after mount   geo.captcha-delivery.com/captcha/?…&t=fe&…
-createTask                 ACCEPTED — errorId 0, taskId issued
-getTaskResult              ERROR_CAPTCHA_UNSOLVABLE
-                           "Workers could not solve the Captcha"
+attempt 1   ERROR_CAPTCHA_UNSOLVABLE            (127s)
+attempt 2   ERROR_CAPTCHA_UNSOLVABLE            (128s)
+attempt 3   SOLVED in 68s, cost $0.00145 -> a `datadome` cookie
+            exit IP identical at solve and at use (178.51.22.75)
+            retry with the cookie: HTTP 429, 0 cards
 ```
 
-Worth reading precisely. The account **does** have the task type, the request
-shape **was** valid, and the `t=fe` in that URL is DataDome's *solvable*
-challenge kind rather than `t=bv`, which is a hard block no solver can
-answer. It got as far as a real attempt and the attempt failed.
+Three things that measurement settles:
 
-**That is one sample, and one sample is not a rate.** Solver workers fail
-transiently, and no conclusion about "DataDome cannot be solved on Vrbo"
-follows from a single `UNSOLVABLE`. What does follow is that this is not a
-switch to flip: it is an integration to build, measure over many attempts,
-and justify — against a path that already returns the full grid for nothing.
+* **The task type is right.** The widget is a real slider — "Slide right to
+  secure your access" — so `DataDomeSliderTask` is the correct call, and
+  `createTask` accepted it every time.
+* **The solver works, at roughly a third.** One success in three, n=3, so
+  that is an order of magnitude and not a rate.
+* **And a successful solve still did not get in.** The cookie was installed,
+  the exit address was the same one that earned it, and Vrbo answered 429
+  again with zero cards.
 
-If Vrbo ever starts challenging residential exits, that calculation changes
-and a solver becomes worth building. It is not worth building for a challenge
-that only appears where its answer cannot be used, and that did not solve on
-the one occasion it was asked.
+The last is the useful one, and it follows from what this whole README opens
+with: **what gets you challenged here is the client.** DataDome said so on
+the challenge page itself — *"Something about your browser's behavior has
+caught our attention"*. Sliding the slider proves a human moved it; it does
+not change what you are browsing with, so the next request is scored afresh.
+There is also an Expedia step on top — the page config carries
+`"validatePath": "/botOrNot/validate"` — which injecting a cookie bypasses
+entirely. That second point is a hypothesis; the 429 is a measurement.
 
-> **Still not verified: a solve of any kind.** The key path into the solver
-> is live (`getBalance` answers) and the gating is tested offline, but a
-> solve is only ever attempted when Expedia's handler picks reCAPTCHA — and
-> across every run here, local, proxied and remote, it picked DataDome.
+So a DataDome solver is not the missing piece on this site. Run a real Chrome
+and the challenge does not appear; run the wrong browser and solving the
+challenge does not save you.
+
+> **Still not exercised: this repo's own solver path.** It fires only when
+> Expedia's handler picks reCAPTCHA, and across every run here — local,
+> proxied and remote — it picked DataDome. The DataDome work above was done
+> with a standalone script against the 2Captcha API, not through this
+> repo's `--solve-captcha`, which deliberately does not offer DataDome to a
+> solver (see above for why).
 
 ### Captchas: what this repo can and cannot solve
 
