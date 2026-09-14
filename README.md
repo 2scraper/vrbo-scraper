@@ -214,7 +214,7 @@ last night's good output. `--allow-empty` is the opt-out.
 | `playwright_scraper.py` | **Recommended.** Needs `--browser-channel chrome` (the default) — `playwright install chrome` |
 | `selenium_scraper.py` | Drives the Chrome you already have, so it gets the right browser for free. **Cannot authenticate a proxy** (`--proxy-server` has nowhere to put a password) and **cannot use an authenticated CDP endpoint** (`debuggerAddress` is a bare `host:port`) |
 | `puppeteer_scraper.py` | pyppeteer is effectively unmaintained. It downloads its **own Chromium**, which this site refuses, so `--chromium-path /path/to/chrome` is required in practice. It warns before the run rather than after a blocked page |
-| `scraper_api_client.py` | One HTTP request per page via the 2Captcha Scraper API, no local browser |
+| `scraper_api_client.py` | One HTTP request per page via the 2Captcha Scraper API, no local browser. **Measured on this site**: HTTP 200, 3.2 MB, and **3 of 50 cards** at $0.0005 — see below |
 
 All three browser engines produce the same rows. Measured on three live runs
 of the same Orlando search on 2026-09-14: 50 rows each, and on the 38
@@ -252,12 +252,56 @@ What the 2Captcha products buy here, behind one key
 * **Fingerprints** (`--fingerprint`) — a consistent device identity.
 * **Captcha solving** — see the honest limits below.
 
-> **Not verified in this repo.** The Scraping Browser and Scraper API paths
-> were exercised and both answered **HTTP 401**, because the 2Captcha key
-> available while writing this returned `ERROR_KEY_DOES_NOT_EXIST`. What *was*
-> verified on those paths is the error handling: credentials are masked in
-> the message (`ws://***:***@cb.2captcha.com:9222`) and the run exits **5**,
-> not 1. The data path is untested and this README will not claim otherwise.
+### The Scraper API gets the top of the page, not the page
+
+Measured 2026-09-14 against a live Orlando search, one request, **$0.0005**:
+
+```
+HTTP 200, 3,219,172 bytes of HTML
+3 of 50 cards parsed — every column the card publishes, fully populated
+```
+
+Three is not a failure, it is the **first paint**. This path renders but
+cannot scroll, and on this site almost every row comes from scrolling an
+inner container. It also comes back **without the pagination counter**, so
+the completeness oracle the browser engines rely on is not available: the
+client cannot tell you how much it missed.
+
+So use it to see what is at the top of a search cheaply — a work list, an
+availability spot-check, "is this property still listed" — and use a browser
+engine when you want the page. Pass the card selector or you will get a shell
+with nothing in it:
+
+```bash
+python3 scraper_api_client.py --url "https://www.vrbo.com/search?destination=..." \
+  --wait-element '[data-stid="lodging-card-responsive"]'
+```
+
+### `--fingerprint` is verified end to end
+
+Measured 2026-09-14: a fresh fetch from the Fingerprint API, and the
+fingerprint actually applied — user agent, `locale`, `timezone_id`
+(`America/New_York` for a US fingerprint), viewport and screen all set on the
+browser context, plus the patch script. A live run with it returned 50/50
+cards at 100% price coverage.
+
+Pass **one** OS-family tag (`--fp-tags Windows`). A list is rejected by the
+API with HTTP 400 — `Windows,Chrome,Desktop` was this repo family's default
+for months and made `--fingerprint` fail on every invocation in four repos at
+once.
+
+> **Still not verified: the Scraping Browser API** (`--cdp-endpoint`). It
+> needs its own `ws://…@cb.2captcha.com:9222` credential, which is separate
+> from the API key, and none was available here. What *was* verified is the
+> error handling: the credential is masked in the message
+> (`ws://***:***@cb.2captcha.com:9222`) and the run exits **5**, not 1. The
+> data path is untested and this README will not claim otherwise.
+>
+> Same for the **captcha solver**. The key path into it is live
+> (`getBalance` answers), and the gating is tested offline — but a solve is
+> only ever attempted when Expedia's handler picks reCAPTCHA, and across
+> every run here it picked DataDome. So the solve itself has not been
+> exercised against this site.
 
 ### Captchas: what this repo can and cannot solve
 

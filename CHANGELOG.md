@@ -62,13 +62,26 @@ in the old CLI carries over.
   arithmetic rather than a threshold — and it downgrades the run to
   `partial`.
 
+### Verified with a live 2Captcha key
+
+- **Scraper API**: HTTP 200, 3.2 MB, **3 of 50 cards** at $0.0005 a request —
+  the first paint, since this path renders but cannot scroll. Its response
+  also carries no pagination counter, so it has no completeness oracle. Good
+  for the top of a search, not for a page.
+- **Fingerprint API**: a fresh fetch, and the fingerprint actually applied —
+  user agent, locale, `timezone_id`, viewport and screen. A live run with
+  `--fingerprint` returned 50/50 cards at 100% price coverage.
+
 ### Not verified
 
-- The **Scraping Browser API** and **Scraper API** data paths. Both answered
-  HTTP 401 because the 2captcha key available at the time returned
-  `ERROR_KEY_DOES_NOT_EXIST`. Their error handling *was* verified: credentials
-  are masked in the message and the run exits 5. The README says so rather
-  than claiming a measurement that was not taken.
+- The **Scraping Browser API** (`--cdp-endpoint`). It needs its own
+  `ws://…@cb.2captcha.com:9222` credential, separate from the API key, and
+  none was available. Its error handling *was* verified: the credential is
+  masked in the message and the run exits 5, not 1.
+- The **solve itself**. The key path into the solver is live (`getBalance`
+  answers) and the gating is tested offline, but a solve is only attempted
+  when Expedia's handler picks reCAPTCHA, and it picked DataDome on every run
+  here.
 
 [Unreleased]: https://github.com/2scraper/vrbo-scraper/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/2scraper/vrbo-scraper/releases/tag/v0.1.0

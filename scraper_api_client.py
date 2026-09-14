@@ -6,32 +6,34 @@ One HTTP request per page, no local browser, no Playwright install. The
 the HTML; this client parses it with the same `product_parser` the browser
 engines use, so the rows and columns are identical.
 
-WHAT IT CAN AND CANNOT GET HERE — AND THIS IS NOT MEASURED
------------------------------------------------------------
-Be warned before you spend anything: **this path was not verified against
-Vrbo.** The 2captcha key available while this repo was written returned
-`ERROR_KEY_DOES_NOT_EXIST`, so every request answered HTTP 401 and the data
-path is untested. What WAS verified is the failure handling — the key is
-never printed, the endpoint's credentials are masked, and the run exits 5.
+WHAT IT GETS, AND WHAT IT CANNOT GET — measured 2026-09-14, $0.0005 a request
+-----------------------------------------------------------------------------
+    HTTP 200, 3,219,172 bytes of HTML
+    3 of 50 cards parsed, every column the card publishes fully populated
+    no pagination counter in the response
 
-What to EXPECT when you do try it, from what is measured about the site:
+Three is not a failure, it is the FIRST PAINT. A Vrbo search page carries its
+grid over client-side POSTs to `/graphql` — 0 `application/ld+json` blocks, 0
+`__NEXT_DATA__`, and an `__APOLLO_STATE__` holding three keys — and the rest
+of the 50 arrive only by scrolling an inner container, which a one-shot fetch
+cannot do. The browser engines reach 50 of 50; this reaches the top of the
+page.
 
-  * A Vrbo search page carries its grid over client-side POSTs to
-    `/graphql`. The first HTML response is a shell with **no cards in it** —
-    0 `application/ld+json` blocks, 0 `__NEXT_DATA__`, and an
-    `__APOLLO_STATE__` holding three keys. So a browserless fetch that does
-    not RENDER will parse zero rows, and `--wait-element` is not optional
-    here, it is the whole job:
+`--wait-element` is NOT optional here, it is the whole job. Without it the
+wait is satisfied by the shell and you get a page with no cards in it:
 
-        --wait-element '[data-stid="lodging-card-responsive"]'
+    --wait-element '[data-stid="lodging-card-responsive"]'
 
-  * Even rendered, expect a PARTIAL page. First paint is 3 to 18 of 50
-    cards, and the rest arrive only by scrolling an inner container — which
-    a one-shot fetch cannot do. A browser engine is the honest way to get a
-    whole page.
+The other thing missing from the response is the site's own
+`1 - 50 of 300+` counter, which is what the browser engines use to know how
+much they missed. So this client cannot tell you what it did not get —
+`results_range` comes back empty and there is no completeness oracle. That is
+a property of the path, not a bug, and it is the reason the rows it writes
+are best treated as a sample rather than a page.
 
 So reach for this when you want a cheap look at what is at the top of a
-search — and use a browser engine when you want the page.
+search — a work list, an availability spot-check, "is this property still
+listed" — and use a browser engine when you want the page.
 
     python3 scraper_api_client.py \\
         --url "https://www.vrbo.com/search?destination=Orlando,%20Florida,%20United%20States%20of%20America" \\
