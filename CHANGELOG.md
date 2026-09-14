@@ -87,12 +87,26 @@ in the old CLI carries over.
   site today. Tried on five exit countries (`us`, `de`, `gb`, `nl`, `ca`):
   all five refused, so it is the exit pool that is scored, not a geography.
 
+- **DataDome**: solvable on this site, measured. A challenge induced on a
+  controlled exit, `DataDomeSliderTask` solved in 49s for $0.00145, and the
+  resulting cookie turned an HTTP 429 into **HTTP 200 and the grid** — for a
+  browser the site otherwise refuses outright. The condition is that the
+  solve and the later requests leave from the SAME exit: DataDome binds the
+  cookie to the address that earned it, and an earlier attempt on a
+  `sessTime-5` session failed purely because the window rotated mid-solve.
+  Roughly one attempt in three solves (n=4).
+
+  Not wired into the repo, and the README says why: the recommended path
+  never meets a challenge, the solve needs a sticky proxy session this tool
+  does not manage, and it cannot help either the browserless client or
+  `--cdp-endpoint`.
+
 ### Not verified
 
-- The **solve itself**. The key path into the solver is live (`getBalance`
-  answers) and the gating is tested offline, but a solve is only attempted
-  when Expedia's handler picks reCAPTCHA, and it picked DataDome on every
-  run here — local and remote alike.
+- **This repo's own `--solve-captcha` path end to end.** It fires only when
+  Expedia's handler picks reCAPTCHA, and it picked DataDome on every run
+  here — local, proxied and remote. The DataDome work above went through a
+  standalone script against the 2Captcha API, not through this repo.
 
 [Unreleased]: https://github.com/2scraper/vrbo-scraper/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/2scraper/vrbo-scraper/releases/tag/v0.1.0

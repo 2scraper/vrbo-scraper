@@ -325,10 +325,16 @@ page. So it is the exit POOL that Expedia has scored, not any one country.
 
 So **this path does not currently get you into Vrbo.** The remote browser is
 a real Chrome, which is the thing this site cares about most — but its exit
-address is refused, and Expedia's handler picks DataDome, which neither this
-repo nor the endpoint's own auto-solve can answer. The engine behaved
-correctly throughout: it named the vendor, spent nothing on a solve it could
-not deliver, and exited 3 rather than writing an empty file over good data.
+address is refused, and the endpoint's own auto-solve did not clear it.
+
+Note what this is *not* evidence of: DataDome here is solvable in general
+(see below), and the reason a solve cannot rescue THIS path is the exit
+address rather than the challenge. A DataDome cookie is bound to the exit
+that earned it, and the Scraping Browser leaves from 2Captcha's own address
+rather than from a proxy you could pass to a solver.
+
+The engine behaved correctly throughout: it named the vendor, spent nothing,
+and exited 3 rather than writing an empty file over good data.
 
 That may change — an exit pool is not a constant — so the path is kept and
 documented rather than removed. But do not buy it expecting it to solve
@@ -336,68 +342,58 @@ access to this site today. **A residential `--proxy` is the paid product
 that addresses the actual constraint here** (the `/graphql` rate limit on
 page turns).
 
-### Why there is no DataDome solver here
+### DataDome on this site IS solvable — and this repo still does not do it
 
-2Captcha *does* sell one (`DataDomeSliderTask`), so the obvious question is
-why this repo does not call it. The answer is that on this site it has
-nothing to solve:
-
-* **The path that works never sees a challenge.** A residential proxy with a
-  real local Chrome returned 50/50 cards and no challenge at all.
-* **The path that sees one almost certainly cannot use the answer.** What a
-  DataDome solve returns is a `datadome=` cookie, and DataDome binds that
-  cookie to the session that earned it — address, user agent, client
-  fingerprint. The evidence for the binding here is the API's own contract
-  rather than a test: `DataDomeSliderTask` has **no proxyless variant**, and
-  requires `proxyAddress`/`proxyPort`/`proxyLogin`/`proxyPassword` alongside
-  `websiteURL`, `captchaUrl` and `userAgent`. A solver needs your proxy in
-  order to solve *from your address*, so that the cookie matches the client
-  that will present it.
-
-  The Scraping Browser leaves from 2Captcha's own exit, not from the proxy
-  you would pass to the task — an address you neither control nor know in
-  advance. Cookie earned at one address, presented from another.
-
-  NOT MEASURED, and said so: no test was run here that solves at one address
-  and replays at another against vrbo.com. This is reasoning from DataDome's
-  model and that API signature, not a measurement.
-
-And the solve was then run end to end, three times, on challenges induced
-deliberately on an exit under our own control. A bundled Chromium through a
-residential proxy is a reliable challenge generator here — this site refuses
-that browser build — so no extra load was put on the site to produce one.
+2Captcha sells a DataDome solver, and the obvious question is whether it
+works here. Measured 2026-09-14, end to end:
 
 ```
-attempt 1   ERROR_CAPTCHA_UNSOLVABLE            (127s)
-attempt 2   ERROR_CAPTCHA_UNSOLVABLE            (128s)
-attempt 3   SOLVED in 68s, cost $0.00145 -> a `datadome` cookie
-            exit IP identical at solve and at use (178.51.22.75)
-            retry with the cookie: HTTP 429, 0 cards
+challenge induced      HTTP 429   (a bundled Chromium through a proxy —
+                                   this site refuses that browser build,
+                                   which makes it a reliable generator)
+captchaUrl             read off the live widget 3s after it mounts
+                       (the server-side HTML carries an EMPTY mount point)
+DataDomeSliderTask     SOLVED in 49s, cost $0.00145 -> a `datadome` cookie
+retry with the cookie  HTTP 200, 764,666 bytes, the grid
 ```
 
-Three things that measurement settles:
+So a solve **does** buy access, and it buys it even for a browser the site
+would otherwise refuse outright.
 
-* **The task type is right.** The widget is a real slider — "Slide right to
-  secure your access" — so `DataDomeSliderTask` is the correct call, and
-  `createTask` accepted it every time.
-* **The solver works, at roughly a third.** One success in three, n=3, so
-  that is an order of magnitude and not a rate.
-* **And a successful solve still did not get in.** The cookie was installed,
-  the exit address was the same one that earned it, and Vrbo answered 429
-  again with zero cards.
+**The one thing that has to be true: the solve and your later requests must
+leave from the same address.** DataDome binds the cookie to the exit that
+earned it. That is easy to get wrong with a rotating proxy — an earlier run
+here failed for exactly that reason, on a session string carrying
+`sessTime-5` while the solve took over two minutes: the window rotated, the
+cookie was earned at one exit and presented from another, and the retry came
+back 429. Re-run with a fresh sticky session at `sessTime-30`, with the
+browser's exit verified identical before and after the solve, and it works.
 
-The last is the useful one, and it follows from what this whole README opens
-with: **what gets you challenged here is the client.** DataDome said so on
-the challenge page itself — *"Something about your browser's behavior has
-caught our attention"*. Sliding the slider proves a human moved it; it does
-not change what you are browsing with, so the next request is scored afresh.
-There is also an Expedia step on top — the page config carries
-`"validatePath": "/botOrNot/validate"` — which injecting a cookie bypasses
-entirely. That second point is a hypothesis; the 429 is a measurement.
+Success rate is not 1. Across four attempts, two came back
+`ERROR_CAPTCHA_UNSOLVABLE` before one solved; call it an order of magnitude
+rather than a rate at n=4.
 
-So a DataDome solver is not the missing piece on this site. Run a real Chrome
-and the challenge does not appear; run the wrong browser and solving the
-challenge does not save you.
+**Why this repo still ships no DataDome path**, now that it demonstrably
+could:
+
+* **The recommended path never meets one.** A real local Chrome on a
+  residential exit returns 50/50 cards with no challenge at all and no cost.
+  Paying $0.00145 and waiting 50s to get past a wall you can walk around is
+  the wrong default.
+* **It needs infrastructure the rest of this tool does not.** A sticky proxy
+  session that outlives the solve, and a live browser to read the widget's
+  `captchaUrl` from — which means it cannot help the browserless
+  `scraper_api_client.py` at all.
+* **It cannot help `--cdp-endpoint` either.** The Scraping Browser leaves
+  from 2Captcha's own exit, not from the proxy you would pass to the task, so
+  the binding above cannot be satisfied there.
+
+Where it *would* earn its keep is scraping at volume from addresses that are
+already scored — datacentre ranges, or a residential pool under load. If that
+is your situation, the measurements above say it is a viable fallback rather
+than a dead end, and the shape of the integration is: induce, read
+`captchaUrl` from the mounted iframe, solve with your proxy, set the cookie,
+continue **through that same exit**.
 
 > **Still not exercised: this repo's own solver path.** It fires only when
 > Expedia's handler picks reCAPTCHA, and across every run here — local,
@@ -424,8 +420,15 @@ as data rather than markup —
 
 This repo solves **reCAPTCHA v2/v3 and nothing else**. So a challenge is only
 offered to the solver when `whichChallenge` names reCAPTCHA; every other pick
-— including DataDome, which is what the measured refusal was — is reported as
-**blocked**, and **no solve is attempted and nothing is charged**.
+— including DataDome, which is what every measured refusal here actually was
+— is reported as **blocked**, and **no solve is attempted and nothing is
+charged**.
+
+That is a deliberate scope choice, not a claim that the others are
+unsolvable: DataDome on this site was solved by hand against the 2Captcha API
+and did buy access (see above). It is not wired in because the recommended
+path never meets a challenge, and because a DataDome solve needs a sticky
+proxy session the rest of this tool does not manage.
 
 Note also that `akamai` is *not* usable as a block marker here. Vrbo is
 fronted by Akamai Bot Manager and every good page loads its sensor script, so
