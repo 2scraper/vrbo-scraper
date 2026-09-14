@@ -1,0 +1,319 @@
+name: canary
+
+# tests.yml (deliberately) never touches vrbo.com — see its own header for
+# why. That leaves a real gap: a markup change on the site only shows up when
+# a user hits it and files an issue, while the offline badge stays green
+# throughout. This workflow is the other half: a real run against a real
+# search URL, so a site-side break is caught here first.
+#
+# WHAT THIS CANARY NEEDS, AND WHAT IT DOES NOT
+# --------------------------------------------
+# Unlike the sibling repos in this family, this one needs NO SECRET to do
+# real work. What Vrbo refuses is the browser BUILD, not the address —
+# measured 2026-09-14, same residential exit, seconds apart:
+#
+#   curl, Chrome user-agent                   429, "Bot or Not?"
+#   Playwright bundled Chromium, real window  429, "Bot or Not?"
+#   Playwright real Chrome, real window       200, 899 KB, 50 cards
+#
+# So the runner installs real Chrome (`playwright install chrome`) and runs
+# it headful under xvfb, which is as close to the measured-working
+# configuration as a runner gets.
+#
+# WHAT IS NOT MEASURED, and is therefore not asserted: whether a GitHub
+# runner's DATACENTRE address gets served at all. It may well not — Vrbo is
+# Expedia, and datacentre ranges are the first thing any bot manager scores.
+# So a blocked run here is reported as a WARNING and does not fail the badge,
+# UNLESS a `VRBO_PROXY` secret is set: with a residential exit in play, a
+# block stops being an access condition and starts being a signal.
+#
+#     gh secret set VRBO_PROXY --repo 2scraper/vrbo-scraper
+#
+# The secret is passed through the ENVIRONMENT, which env_config.py already
+# reads for exactly this variable, rather than through a --proxy flag. Two
+# reasons: a credential on a command line is readable by anything that can
+# run `ps`, which is the rule this repo states and should therefore follow in
+# its own CI; and an unset secret arrives as an empty string, which the
+# loader already treats as "not configured", so there is no commented-out
+# line for anyone to forget to uncomment. One line is correct with and
+# without it.
+#
+# A check that is always red teaches everyone to ignore checks, which is
+# worse than having no check at all — hence the warning path. But a warning
+# must not read as a pass either, so every one of them also writes to the
+# step summary saying in words that the canary did not test anything.
+
+on:
+  schedule:
+    # 06:20 UTC. Off the hour, because everything else in the world runs on
+    # it and a queued runner adds nothing but latency.
+    - cron: "20 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # `secrets` is not available in a job-level `if`, so presence is tested
+      # through the job env and read in each step's condition.
+      HAVE_PROXY: ${{ secrets.VRBO_PROXY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the client and REAL CHROME
+        # `chrome`, not `chromium`. The bundled Chromium is the build this
+        # site was measured refusing, so installing it here would produce a
+        # canary that is red every day for a reason that has nothing to do
+        # with the site.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-playwright.txt
+          playwright install --with-deps chrome
+          sudo apt-get install -y --no-install-recommends xvfb
+
+      - name: Scrape a real, known-good search listing
+        id: run
+        # --pages 2, not 1: with one page the next-button walk is never
+        # exercised, and that walk is the single most fragile thing in this
+        # repo — the site publishes no rel=next, no canonical and no per-page
+        # address, so if the button moves there is nothing to fall back on.
+        #
+        # --delay 15: the data behind a page turn comes over POST /graphql,
+        # which is rate limited separately from the HTML. 15s is well above
+        # the 5s default because a shared runner address is a worse starting
+        # position than a home connection.
+        #
+        # Dates are PINNED in the URL. Without them the site quotes every
+        # property its own cheapest night, so the prices would not be
+        # comparable and `stay_dates` would vary run to run — neither of
+        # which a canary can assert on. With them, `stay_dates` is null on
+        # every row, which IS assertable.
+        #
+        # set +e: GitHub Actions runs `run:` steps as `bash -e`, so without
+        # this a non-zero scraper exit aborts the script on THAT line and the
+        # `echo "exit_code=$?"` below never runs. continue-on-error only
+        # stops the step from failing the job; it does not touch errexit.
+        continue-on-error: true
+        env:
+          VRBO_PROXY: ${{ secrets.VRBO_PROXY }}
+        run: |
+          set +e
+          xvfb-run -a python3 playwright_scraper.py \
+            --url "https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=2026-11-14&endDate=2026-11-16&adults=2" \
+            --pages 2 --delay 15 --retries 4 \
+            --out canary_run --dump-html canary_run.html
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Interpret the exit code
+        id: verdict
+        # ACCESS CONDITIONS ARE NOT DEFECTS, and on this site that
+        # distinction is what decides whether the badge means anything.
+        run: |
+          set -e
+          code="${{ steps.run.outputs.exit_code }}"
+          tested=true
+          case "$code" in
+            0)
+              echo "OK — rows parsed from a live run." ;;
+            3)
+              if [ "$HAVE_PROXY" = "true" ]; then
+                echo "::error::Blocked (exit 3) WITH a residential proxy in play. That is no longer an access condition — either the site has changed what it refuses, or the challenge handler now fires on this configuration. The debug dump in the artefacts names the vendor it picked."
+                exit 1
+              fi
+              tested=false
+              echo "::warning::Blocked before parsing (exit 3) from a bare GitHub runner, with no VRBO_PROXY secret set. A datacentre address being refused by Expedia is expected and says nothing about this code, so the run is not failed — but it also means the site-side check did NOT happen today. Set VRBO_PROXY to make this canary real."
+              echo "### Canary did NOT test anything (exit 3, blocked)" >> "$GITHUB_STEP_SUMMARY"
+              echo "A bare runner address was refused. The parser was not exercised. Set a \`VRBO_PROXY\` secret to give this canary a residential exit; a block would then fail the job, which is the point." >> "$GITHUB_STEP_SUMMARY" ;;
+            6)
+              tested=false
+              echo "::warning::Partial run (exit 6). The commonest cause here is the page turn being rate limited: the HTML keeps answering 200 while POST /graphql answers 429. canary_run.meta.json carries the stop_reason and cards_missing. Not failed, because that is an access condition — but if it repeats every day, suspect the next-button selector instead."
+              echo "### Canary tested only PART of the run (exit 6)" >> "$GITHUB_STEP_SUMMARY"
+              echo "See \`stop_reason\` and \`cards_missing\` in the sidecar artefact. \`next_page_throttled\` is rate limiting; anything else is worth reading." >> "$GITHUB_STEP_SUMMARY" ;;
+            5)
+              tested=false
+              echo "::warning::Remote API error (exit 5) — a remote endpoint refused the connection, so nothing was tested."
+              echo "### Canary did NOT test anything (exit 5)" >> "$GITHUB_STEP_SUMMARY" ;;
+            4)
+              echo "::error::Ran fine and parsed 0 rows (exit 4) from a search that holds 50 per page. The card anchor (data-stid=lodging-card-responsive) or the inner scroll container (.scrollable-result-section) has most likely moved — this is exactly the regression this canary exists to catch. The HTML dump in the artefacts tells you which."
+              exit 1 ;;
+            2)
+              echo "::error::Bad usage (exit 2) — the workflow's own arguments are wrong, not the site."
+              exit 1 ;;
+            *)
+              echo "::error::Unexpected exit code $code (see the step above for the traceback)."
+              exit 1 ;;
+          esac
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+
+      - name: Sanity-check the scraped data
+        # Only when the run actually got in: on a blocked run there is no
+        # output file, and a missing file would fail for the wrong reason.
+        if: steps.verdict.outputs.tested == 'true'
+        # Exit 0 only means "some rows were written". It says nothing about
+        # whether the page rendered: a snapshot taken too early still writes
+        # rows, just with fields empty. Every floor below is set from a
+        # measured figure and deliberately under it, so this fails on a
+        # collapse rather than on normal variation.
+        run: |
+          python3 - <<'EOF'
+          import json, re, sys
+          from pathlib import Path
+
+          PAGES_REQUESTED = 2
+          PER_PAGE = 50          # what the site's own counter states
+          # Well under two full pages: a short page or a few cards failing to
+          # paint cannot trip it, but a collapse can.
+          MIN_ROWS = 60
+
+          rows = json.loads(Path("canary_run.json").read_text())
+          meta = json.loads(Path("canary_run.meta.json").read_text())
+          fail = []
+
+          if len(rows) < MIN_ROWS:
+              fail.append(f"only {len(rows)} rows, expected about "
+                          f"{PAGES_REQUESTED * PER_PAGE} across "
+                          f"{PAGES_REQUESTED} pages")
+
+          skus = [r.get("sku") for r in rows]
+          if len(set(skus)) != len(skus):
+              fail.append(f"{len(skus) - len(set(skus))} duplicate sku(s) — the "
+                          f"dedupe is not running")
+          bad_sku = [s for s in skus if not re.fullmatch(r"\d+(?:ha)?", s or "")]
+          if bad_sku:
+              fail.append(f"{len(bad_sku)} sku(s) are not a Vrbo property id: "
+                          f"{bad_sku[:3]}")
+
+          # Fully populated on every measured run — 50/50 on three live runs
+          # across three engines. Any of these collapsing means an anchor has
+          # moved.
+          for field, floor in (("title", 1.0), ("sku", 1.0), ("url", 1.0),
+                               ("price", 0.90), ("currency", 0.90),
+                               ("property_type", 0.95), ("location_note", 0.95),
+                               ("expedia_property_id", 0.95),
+                               ("page", 1.0), ("position", 1.0),
+                               ("listing_kind", 1.0), ("source", 1.0)):
+              got = sum(1 for r in rows if r.get(field) not in (None, ""))
+              if rows and got / len(rows) < floor:
+                  fail.append(f"{field} present on only {got}/{len(rows)} rows "
+                              f"(floor {floor:.0%})")
+
+          # Ratings are out of TEN here, and the scale rides beside them. A
+          # rating above 10 means the badge being read is not the rating.
+          bad_rating = [r.get("sku") for r in rows
+                        if r.get("rating") is not None
+                        and not (0 <= r["rating"] <= 10)]
+          if bad_rating:
+              fail.append(f"{len(bad_rating)} rating(s) outside 0-10: "
+                          f"{bad_rating[:3]} — the Premier Host badge is "
+                          f"probably being read as the rating")
+          scaleless = [r.get("sku") for r in rows
+                       if r.get("rating") is not None and r.get("rating_scale") != 10]
+          if scaleless:
+              fail.append(f"{len(scaleless)} row(s) have a rating with no "
+                          f"rating_scale of 10: {scaleless[:3]}")
+
+          # A missing currency must be null, never a default — and a currency
+          # with no price to carry is a column lying.
+          currencies = {r.get("currency") for r in rows if r.get("currency")}
+          if currencies - {"USD"}:
+              fail.append(f"vrbo.com rows carry a currency other than USD "
+                          f"({sorted(currencies)})")
+          mislabelled = [r.get("sku") for r in rows
+                         if r.get("price") is None and r.get("currency")]
+          if mislabelled:
+              fail.append(f"{len(mislabelled)} row(s) carry a currency with no "
+                          f"price: {mislabelled[:3]}")
+
+          # THE DATED-SEARCH INVARIANT. This URL pins startDate/endDate, and
+          # a card then stops quoting a window of its own — measured null on
+          # 50 of 50. A populated stay_dates here means the site ignored the
+          # dates, and every price in this run is for a different night.
+          dated = [r.get("sku") for r in rows if r.get("stay_dates")]
+          if dated:
+              fail.append(f"{len(dated)} row(s) carry stay_dates on a search "
+                          f"with pinned dates: {dated[:3]} — the site has "
+                          f"ignored startDate/endDate, so these prices are "
+                          f"not comparable with each other")
+
+          # Columns only --mode property can know.
+          for field in ("category",):
+              got = sum(1 for r in rows if r.get(field) is not None)
+              if got:
+                  fail.append(f"{got}/{len(rows)} listing rows have `{field}`, "
+                              f"which only a property page publishes")
+
+          # price_source says which node was read; a listing run can only
+          # have read a card.
+          sources = {r.get("price_source") for r in rows if r.get("price_source")}
+          if sources - {"card", "card-a11y"}:
+              fail.append(f"listing rows carry price_source {sorted(sources)} — "
+                          f"only a card is possible on a search page")
+
+          # `position` restarts at 1 on each page, so the PAIR is the key.
+          pairs = [(r.get("page"), r.get("position")) for r in rows]
+          if len(set(pairs)) != len(pairs):
+              fail.append(f"{len(pairs) - len(set(pairs))} row(s) share a "
+                          f"page+position pair — the page number is not being "
+                          f"threaded through the parser")
+
+          # The point of running more than one page. This is the check that
+          # would have caught a dead next-button.
+          pages_seen = {r.get("page") for r in rows}
+          if len(pages_seen) < PAGES_REQUESTED:
+              fail.append(f"rows came from only page(s) {sorted(pages_seen)} — "
+                          f"the next-button walk did not advance, and this "
+                          f"site has no rel=next and no ?page= to fall back on")
+          if meta.get("pages_completed", 0) < PAGES_REQUESTED:
+              fail.append(f"pagination stopped after "
+                          f"{meta.get('pages_completed')} of {PAGES_REQUESTED} "
+                          f"pages (stop_reason={meta.get('stop_reason')!r})")
+          if meta.get("status") != "complete":
+              fail.append(f"run status is {meta.get('status')!r}, not 'complete'")
+          if meta.get("mode") != "listing":
+              fail.append(f"run mode is {meta.get('mode')!r}, not 'listing'")
+
+          # The scroll IS load-bearing here, unlike in a sibling repo: first
+          # paint is 3-18 cards and the rest come from scrolling the inner
+          # container. A sidecar with no scroll trace means the loop has been
+          # removed or the container selector has moved.
+          if not meta.get("scroll"):
+              fail.append("the sidecar records no scroll trace — the results "
+                          "container selector has most likely moved, and "
+                          "almost every row on a page comes from that scroll")
+
+          priced = sum(1 for r in rows if r.get("price") is not None)
+          for line in fail:
+              print(f"::error::{line}")
+          print(f"[canary] {len(rows)} rows, {priced} priced "
+                f"({100 * priced // max(len(rows), 1)}%), "
+                f"status={meta.get('status')}, "
+                f"pages={meta.get('pages_completed')}/{PAGES_REQUESTED}, "
+                f"currency={sorted(currencies)}, "
+                f"cards_missing={meta.get('cards_missing')}")
+          sys.exit(1 if fail else 0)
+          EOF
+
+      - name: Upload run artifacts (output, HTML snapshot, debug dumps)
+        # Always, not just on failure: a run that returns the WRONG numbers
+        # with no error is exactly the regression that needs the actual bytes
+        # the parser saw, not a pass/fail badge.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-run-${{ github.run_id }}
+          path: |
+            canary_run.json
+            canary_run.csv
+            canary_run.meta.json
+            canary_run.html*
+            canary_run_page*_debug.*
+          if-no-files-found: ignore
+          retention-days: 14
