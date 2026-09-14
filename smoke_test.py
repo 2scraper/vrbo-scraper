@@ -1069,11 +1069,16 @@ def test_engine_parity(skips):
     # And the DOCUMENTED differences, asserted in both directions so closing
     # one needs a README edit rather than a quiet patch.
     documented_extra = {
+        # --cdp-connect-timeout is on the two engines that can actually USE
+        # an authenticated CDP endpoint. Selenium cannot (chromedriver's
+        # debuggerAddress has nowhere to put a password), so a connect
+        # timeout there would be a flag for a path that does not exist.
         "playwright_scraper": {"--locale", "--fingerprint", "--fp-tags",
-                               "--fp-country", "--browser-channel"},
+                               "--fp-country", "--browser-channel",
+                               "--cdp-connect-timeout"},
         "selenium_scraper": {"--locale", "--fingerprint", "--fp-tags",
                              "--fp-country"},
-        "puppeteer_scraper": {"--chromium-path"},
+        "puppeteer_scraper": {"--chromium-path", "--cdp-connect-timeout"},
     }
     for engine, extra in documented_extra.items():
         actual = flagsets[engine] - contract

@@ -81,7 +81,12 @@ THIN_PAGE_SHARE = 0.6
 # no connect timeout of its own and its page methods' `timeout` option does
 # not cover a browser that has stopped answering at all.
 DEFAULT_OP_TIMEOUT = 120
-CONNECT_TIMEOUT = 30
+# 150, not 30, and kept identical to the Playwright engine's
+# CDP_CONNECT_TIMEOUT_MS — see its comment for the measurement. Short version:
+# a Scraping Browser provisions on the WebSocket upgrade, that upgrade was
+# measured hanging 121s before the SERVER hung up, and a client that walks
+# away first leaves the profile wedged at `profile_locked`.
+CONNECT_TIMEOUT = 150
 
 
 class _AsyncBridge:
@@ -232,7 +237,9 @@ class _Session:
             # Selenium's debuggerAddress, which has nowhere to put a password.
             self.browser = self.bridge.run(
                 connect(browserWSEndpoint=self.args.cdp_endpoint,
-                        ignoreHTTPSErrors=True), timeout=CONNECT_TIMEOUT)
+                        ignoreHTTPSErrors=True),
+                timeout=getattr(self.args, "cdp_connect_timeout",
+                                CONNECT_TIMEOUT))
             self.page = self.bridge.run(self.browser.newPage())
             return self
 
@@ -922,6 +929,16 @@ def parse_args():
                         "ws://user:pass@host:port. pyppeteer authenticates on "
                         "the WebSocket upgrade, so the Scraping Browser API "
                         "endpoint works from this engine.")
+    p.add_argument("--cdp-connect-timeout", type=float,
+                   default=CONNECT_TIMEOUT, metavar="SECONDS",
+                   help=f"How long to wait for --cdp-endpoint to accept the "
+                        f"connection (default {CONNECT_TIMEOUT}). Deliberately "
+                        f"high, and identical to the Playwright engine's: a "
+                        f"Scraping Browser provisions a browser when the "
+                        f"WebSocket upgrade arrives, and one was measured "
+                        f"taking 121s before the SERVER gave up. Giving up "
+                        f"earlier than the server does leaves the profile held "
+                        f"by a half-open session.")
     p.add_argument("--dump-html", default=None, metavar="PATH",
                    help="Save the exact HTML the parser is given, on success "
                         "as well as failure.")

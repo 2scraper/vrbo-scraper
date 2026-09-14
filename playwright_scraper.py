@@ -104,6 +104,22 @@ logger = logging.getLogger("playwright_scraper")
 # site at all.
 DEFAULT_BROWSER_CHANNEL = "chrome"
 
+# How long to wait for a remote browser to accept the CDP connection.
+#
+# 150s, not the 30s this family shipped, and the difference is measured. A
+# Scraping Browser endpoint provisions a browser ON DEMAND when the WebSocket
+# upgrade arrives, and that upgrade was observed hanging for **121 seconds**
+# before the server itself hung up. A 30s client timeout therefore abandons a
+# session the server is still setting up — and the profile stays HELD by the
+# half-open session: every subsequent attempt, over WebSocket and over the
+# endpoint's own HTTP sibling alike, answered `500 profile_locked`, and it did
+# not clear in twenty minutes.
+#
+# So the old default did not merely fail early, it could WEDGE THE PROFILE
+# it failed on. Sitting above the server's own give-up point means the client
+# is never the one that walks away first.
+CDP_CONNECT_TIMEOUT_MS = 150_000
+
 
 def _chrome_ua(chromium_version: str) -> str:
     """Build a desktop-Chrome UA naming the browser's OWN real version.
@@ -441,7 +457,8 @@ def _connect_remote(pw, args):
     logger.info("Connecting to existing browser over CDP: %s",
                 _mask_credentials(args.cdp_endpoint))
     try:
-        browser = pw.chromium.connect_over_cdp(args.cdp_endpoint, timeout=30000)
+        browser = pw.chromium.connect_over_cdp(
+            args.cdp_endpoint, timeout=args.cdp_connect_timeout * 1000)
     except (PWError, PWTimeout) as e:
         # Playwright puts the endpoint it tried into the exception text, and
         # that endpoint is a URL with a password in it — repeated five times,
@@ -455,8 +472,13 @@ def _connect_remote(pw, args):
             f"{_mask_credentials(args.cdp_endpoint)}: "
             f"{_mask_credentials(str(e))}\n"
             f"A Scraping Browser profile allows ONE live connection at a "
-            f"time, so a 500 here usually means another run still holds this "
-            f"`pid`. Wait for it to finish, or use a different pid."
+            f"time, so `profile_locked` here means something still holds this "
+            f"`pid`. That something can be THIS tool: a connect that gives up "
+            f"before the server does leaves the session half-open and the "
+            f"profile wedged — measured locked for over twenty minutes "
+            f"afterwards, on the endpoint's HTTP sibling as well as over "
+            f"WebSocket. If that has happened, --cdp-connect-timeout is the "
+            f"knob; otherwise use a different pid."
         ) from None
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
@@ -1334,6 +1356,17 @@ def parse_args():
                         "endpoint, or any browser that exposes a CDP URL. "
                         "--proxy, --browser-channel and --headless/--headful "
                         "are ignored when this is set.")
+    p.add_argument("--cdp-connect-timeout", type=float,
+                   default=CDP_CONNECT_TIMEOUT_MS / 1000, metavar="SECONDS",
+                   help=f"How long to wait for --cdp-endpoint to accept the "
+                        f"connection (default {CDP_CONNECT_TIMEOUT_MS // 1000}). "
+                        f"Deliberately high: a Scraping Browser provisions a "
+                        f"browser when the WebSocket upgrade arrives, and one "
+                        f"was measured taking 121s before the SERVER gave up. "
+                        f"Giving up earlier than the server does leaves the "
+                        f"profile held by a half-open session — measured "
+                        f"`profile_locked` on every later attempt, for over "
+                        f"twenty minutes.")
     p.add_argument("--dump-html", default=None, metavar="PATH",
                    help="Save the exact HTML the parser is given, on success "
                         "as well as failure. Useful when the row count is "

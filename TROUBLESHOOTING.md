@@ -179,6 +179,49 @@ wrong behaviour.
 
 ---
 
+## "`--cdp-endpoint` says `profile_locked` and never clears"
+
+A Scraping Browser profile allows **one live connection**, and the thing
+holding it can be this tool.
+
+Measured 2026-09-14 against a live endpoint. The credential was fine — the
+endpoint's HTTP sibling answered `200` with `Chrome/151.0.7922.174` on the
+first call. But the WebSocket upgrade, which is what actually provisions the
+browser, **hung for 121 seconds and then the server hung up**. After that the
+profile reported `500 profile_locked` on *both* the WebSocket and the HTTP
+endpoint, and had not cleared twenty minutes later.
+
+So a client that gives up before the server does leaves a half-open session
+that wedges the profile. The default connect timeout is now **150s**, above
+the server's own give-up point, so the client is never the one to walk away
+first:
+
+```bash
+--cdp-connect-timeout 150     # the default; raise it if your endpoint is slower
+```
+
+If a profile is already wedged, nothing on this side will free it — use a
+different `pid`, or reset the profile from the 2Captcha dashboard. A quick
+way to tell a wedged profile from a bad credential without taking the lock
+again, since a plain HTTP GET does not provision anything:
+
+```bash
+python3 - <<'EOF'
+import os, requests
+from urllib.parse import urlsplit
+p = urlsplit(os.environ["VRBO_CDP_ENDPOINT"])
+r = requests.get(f"http://{p.hostname}:{p.port}/json/version",
+                 auth=(p.username, p.password), timeout=30)
+print(r.status_code, r.text[:120])
+EOF
+```
+
+`200` plus a Chrome version means the credential is good and the profile is
+free. `500 profile_locked` means it is held. `401` means the credential is
+wrong.
+
+---
+
 ## "Which storefront should I use?"
 
 The one that has the inventory. They are five different catalogues:

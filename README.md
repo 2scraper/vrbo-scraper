@@ -230,6 +230,8 @@ closing one needs a README edit rather than a quiet patch:
 
 * `--browser-channel` — Playwright only
 * `--chromium-path` — pyppeteer only
+* `--cdp-connect-timeout` — Playwright and pyppeteer only (Selenium cannot
+  use an authenticated CDP endpoint at all)
 * `--locale`, `--fingerprint`, `--fp-tags`, `--fp-country` — Playwright and
   Selenium only
 
