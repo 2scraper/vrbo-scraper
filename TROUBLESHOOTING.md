@@ -232,6 +232,38 @@ occasionally: an exit pool is not a constant.
 
 ---
 
+## "My proxy is SOCKS5 and the run dies at launch"
+
+```
+BrowserType.launch: Browser does not support socks5 proxy authentication
+```
+
+Measured, and it is a Chromium limitation rather than anything this repo
+does: Chromium accepts an **unauthenticated** SOCKS5 proxy
+(`socks5://host:port`) and refuses an authenticated one outright. Selenium is
+worse — it cannot authenticate *any* proxy.
+
+Three ways out, best first:
+
+1. **2Captcha's IP-whitelist mode.** Whitelist your address, ask
+   `/proxy/generate_white_list_connections` for connections, and you get one
+   `host:port` per exit with **no credentials in them at all**. Those work in
+   every engine and drop straight into `--proxy-file`.
+2. **Ask for an HTTP endpoint instead.** `http://user:pass@host:port` works
+   in Playwright and pyppeteer, which pass credentials through the driver's
+   own fields rather than the command line. (Note the ports differ per
+   product — an endpoint that speaks SOCKS5 on its port did not answer HTTP
+   on that port or the next one when tried.)
+3. **A local relay**, if you are stuck with a credentialled SOCKS5 string: a
+   small unauthenticated HTTP `CONNECT` listener on `127.0.0.1` that dials
+   the authenticated SOCKS5 upstream. Then `--proxy http://127.0.0.1:PORT`.
+   This also keeps the credentials off the browser's command line, which is
+   what this project's own rules want anyway. It is a handful of lines over
+   `PySocks`; it is deliberately not shipped here, because options 1 and 2
+   are better and a proxy relay is not this repo's job.
+
+---
+
 ## "Which storefront should I use?"
 
 The one that has the inventory. They are five different catalogues:

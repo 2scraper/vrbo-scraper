@@ -72,13 +72,20 @@ in the old CLI carries over.
   user agent, locale, `timezone_id`, viewport and screen. A live run with
   `--fingerprint` returned 50/50 cards at 100% price coverage.
 
+- **Residential proxy**: a 2Captcha `region-be` exit driving a real local
+  Chrome returned **50/50 cards, 100% price coverage, `status: complete`**
+  and no challenge of any kind. This is the paid product that helps on this
+  site. Measured on the same run: a Belgian exit on `vrbo.com` still gets
+  `vrbo.com` and USD, so the site does **not** geo-redirect by exit address —
+  which is why there is no `--country` flag.
 - **Scraping Browser API**: connects in ~3s and enables
   `Captcha.setAutoSolve` — and Vrbo then answers **HTTP 429** with a 116 KB
   `Bot or Not?` page on the first request and both retries
   (`whichChallenge: datadome-challenge`), so the run exits 3. The path works;
   the site refuses the exit. Documented rather than removed, because an exit
   pool is not a constant — but the README says plainly not to buy it for this
-  site today.
+  site today. Tried on five exit countries (`us`, `de`, `gb`, `nl`, `ca`):
+  all five refused, so it is the exit pool that is scored, not a geography.
 
 ### Not verified
 

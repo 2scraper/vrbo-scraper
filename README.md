@@ -246,9 +246,12 @@ key and no proxy.
 What the 2Captcha products buy here, behind one key
 ([2captcha.com](https://2captcha.com)):
 
-* **Proxies** — the useful one on this site, and not for the reason you
-  expect. A proxy does **not** get the wrong browser past the front door; it
-  spreads the `/graphql` rate limit that stops a deep multi-page run.
+* **Proxies** — **the one that works here**, measured 2026-09-14: a 2Captcha
+  residential exit (`region-be`) driving a real local Chrome returned
+  **50/50 cards at 100% price coverage, `status: complete`, and no challenge
+  of any kind**. Note what it is and is not for: a proxy does **not** get the
+  wrong browser past the front door, it spreads the `/graphql` rate limit
+  that stops a deep multi-page run.
 * **The Scraping Browser API** (`--cdp-endpoint`) — a remote browser, so you
   do not run one. **Measured refused by Vrbo on 2026-09-14** — see below
   before spending anything on it. Selenium cannot reach it at all (see
@@ -281,6 +284,14 @@ python3 scraper_api_client.py --url "https://www.vrbo.com/search?destination=...
   --wait-element '[data-stid="lodging-card-responsive"]'
 ```
 
+### The exit does not change the storefront
+
+Measured on the same run: a **Belgian** residential exit fetching
+`vrbo.com` still got `vrbo.com`, still priced in **USD**, and produced rows
+identical in shape to a local run. Vrbo does not geo-redirect by exit
+address — the storefront is the hostname, which is why there is no
+`--country` flag anywhere in this repo.
+
 ### `--fingerprint` is verified end to end
 
 Measured 2026-09-14: a fresh fetch from the Fingerprint API, and the
@@ -308,6 +319,10 @@ page 1  -> HTTP 429, "Bot or Not?", 116,035 bytes
 exit 3
 ```
 
+Tried on **five exit countries** with the same profile — `us`, `de`, `gb`,
+`nl`, `ca` — and all five answered HTTP 429 with a ~116 KB `Bot or Not?`
+page. So it is the exit POOL that Expedia has scored, not any one country.
+
 So **this path does not currently get you into Vrbo.** The remote browser is
 a real Chrome, which is the thing this site cares about most — but its exit
 address is refused, and Expedia's handler picks DataDome, which neither this
@@ -321,10 +336,27 @@ access to this site today. **A residential `--proxy` is the paid product
 that addresses the actual constraint here** (the `/graphql` rate limit on
 page turns).
 
-> **Still not verified: the solve itself.** The key path into the solver is
-> live (`getBalance` answers) and the gating is tested offline, but a solve
-> is only ever attempted when Expedia's handler picks reCAPTCHA — and across
-> every run here, local and remote, it picked DataDome.
+### Why there is no DataDome solver here
+
+2Captcha *does* sell one (`DataDomeSliderTask`), so the obvious question is
+why this repo does not call it. The answer is that on this site it has
+nothing to solve:
+
+* **The path that works never sees a challenge.** A residential proxy with a
+  real local Chrome returned 50/50 cards and no challenge at all.
+* **The path that sees one cannot use the answer.** A DataDome solution is
+  an **IP-bound cookie** — it is only valid from the proxy passed in the
+  task. The Scraping Browser leaves from 2Captcha's own exit, not from your
+  proxy, so a solved cookie cannot be matched to the browser presenting it.
+
+If Vrbo ever starts challenging residential exits, that calculation changes
+and a solver becomes worth adding. It is not worth adding for a challenge
+that only appears where its answer cannot be used.
+
+> **Still not verified: a solve of any kind.** The key path into the solver
+> is live (`getBalance` answers) and the gating is tested offline, but a
+> solve is only ever attempted when Expedia's handler picks reCAPTCHA — and
+> across every run here, local, proxied and remote, it picked DataDome.
 
 ### Captchas: what this repo can and cannot solve
 
