@@ -362,9 +362,36 @@ nothing to solve:
   and replays at another against vrbo.com. This is reasoning from DataDome's
   model and that API signature, not a measurement.
 
+And when the solve was actually attempted end to end, it did not succeed.
+Measured 2026-09-14, on a challenge induced deliberately on an exit under our
+own control (a bundled Chromium through a residential proxy — this site
+refuses that browser, which makes it a reliable challenge generator without
+hammering anything):
+
+```
+challenge induced          HTTP 429, DataDome
+captchaUrl from the live
+  widget, 3s after mount   geo.captcha-delivery.com/captcha/?…&t=fe&…
+createTask                 ACCEPTED — errorId 0, taskId issued
+getTaskResult              ERROR_CAPTCHA_UNSOLVABLE
+                           "Workers could not solve the Captcha"
+```
+
+Worth reading precisely. The account **does** have the task type, the request
+shape **was** valid, and the `t=fe` in that URL is DataDome's *solvable*
+challenge kind rather than `t=bv`, which is a hard block no solver can
+answer. It got as far as a real attempt and the attempt failed.
+
+**That is one sample, and one sample is not a rate.** Solver workers fail
+transiently, and no conclusion about "DataDome cannot be solved on Vrbo"
+follows from a single `UNSOLVABLE`. What does follow is that this is not a
+switch to flip: it is an integration to build, measure over many attempts,
+and justify — against a path that already returns the full grid for nothing.
+
 If Vrbo ever starts challenging residential exits, that calculation changes
-and a solver becomes worth adding. It is not worth adding for a challenge
-that only appears where its answer cannot be used.
+and a solver becomes worth building. It is not worth building for a challenge
+that only appears where its answer cannot be used, and that did not solve on
+the one occasion it was asked.
 
 > **Still not verified: a solve of any kind.** The key path into the solver
 > is live (`getBalance` answers) and the gating is tested offline, but a
