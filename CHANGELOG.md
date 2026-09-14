@@ -72,16 +72,20 @@ in the old CLI carries over.
   user agent, locale, `timezone_id`, viewport and screen. A live run with
   `--fingerprint` returned 50/50 cards at 100% price coverage.
 
+- **Scraping Browser API**: connects in ~3s and enables
+  `Captcha.setAutoSolve` — and Vrbo then answers **HTTP 429** with a 116 KB
+  `Bot or Not?` page on the first request and both retries
+  (`whichChallenge: datadome-challenge`), so the run exits 3. The path works;
+  the site refuses the exit. Documented rather than removed, because an exit
+  pool is not a constant — but the README says plainly not to buy it for this
+  site today.
+
 ### Not verified
 
-- The **Scraping Browser API** (`--cdp-endpoint`). It needs its own
-  `ws://…@cb.2captcha.com:9222` credential, separate from the API key, and
-  none was available. Its error handling *was* verified: the credential is
-  masked in the message and the run exits 5, not 1.
 - The **solve itself**. The key path into the solver is live (`getBalance`
   answers) and the gating is tested offline, but a solve is only attempted
-  when Expedia's handler picks reCAPTCHA, and it picked DataDome on every run
-  here.
+  when Expedia's handler picks reCAPTCHA, and it picked DataDome on every
+  run here — local and remote alike.
 
 [Unreleased]: https://github.com/2scraper/vrbo-scraper/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/2scraper/vrbo-scraper/releases/tag/v0.1.0

@@ -250,7 +250,9 @@ What the 2Captcha products buy here, behind one key
   expect. A proxy does **not** get the wrong browser past the front door; it
   spreads the `/graphql` rate limit that stops a deep multi-page run.
 * **The Scraping Browser API** (`--cdp-endpoint`) — a remote browser, so you
-  do not run one. Selenium cannot reach it (see above).
+  do not run one. **Measured refused by Vrbo on 2026-09-14** — see below
+  before spending anything on it. Selenium cannot reach it at all (see
+  above).
 * **Fingerprints** (`--fingerprint`) — a consistent device identity.
 * **Captcha solving** — see the honest limits below.
 
@@ -292,18 +294,37 @@ API with HTTP 400 — `Windows,Chrome,Desktop` was this repo family's default
 for months and made `--fingerprint` fail on every invocation in four repos at
 once.
 
-> **Still not verified: the Scraping Browser API** (`--cdp-endpoint`). It
-> needs its own `ws://…@cb.2captcha.com:9222` credential, which is separate
-> from the API key, and none was available here. What *was* verified is the
-> error handling: the credential is masked in the message
-> (`ws://***:***@cb.2captcha.com:9222`) and the run exits **5**, not 1. The
-> data path is untested and this README will not claim otherwise.
->
-> Same for the **captcha solver**. The key path into it is live
-> (`getBalance` answers), and the gating is tested offline — but a solve is
-> only ever attempted when Expedia's handler picks reCAPTCHA, and across
-> every run here it picked DataDome. So the solve itself has not been
-> exercised against this site.
+### The Scraping Browser API connects — and Vrbo refuses it
+
+Measured 2026-09-14 with a live `country-us` endpoint. The client side is
+fine; the site is not:
+
+```
+connected over CDP in ~3s
+Captcha.setAutoSolve enabled
+page 1  -> HTTP 429, "Bot or Not?", 116,035 bytes
+        retried twice through the same path — 429 again, both times
+        whichChallenge: datadome-challenge
+exit 3
+```
+
+So **this path does not currently get you into Vrbo.** The remote browser is
+a real Chrome, which is the thing this site cares about most — but its exit
+address is refused, and Expedia's handler picks DataDome, which neither this
+repo nor the endpoint's own auto-solve can answer. The engine behaved
+correctly throughout: it named the vendor, spent nothing on a solve it could
+not deliver, and exited 3 rather than writing an empty file over good data.
+
+That may change — an exit pool is not a constant — so the path is kept and
+documented rather than removed. But do not buy it expecting it to solve
+access to this site today. **A residential `--proxy` is the paid product
+that addresses the actual constraint here** (the `/graphql` rate limit on
+page turns).
+
+> **Still not verified: the solve itself.** The key path into the solver is
+> live (`getBalance` answers) and the gating is tested offline, but a solve
+> is only ever attempted when Expedia's handler picks reCAPTCHA — and across
+> every run here, local and remote, it picked DataDome.
 
 ### Captchas: what this repo can and cannot solve
 

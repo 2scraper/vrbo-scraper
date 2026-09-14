@@ -179,36 +179,29 @@ wrong behaviour.
 
 ---
 
-## "`--cdp-endpoint` says `profile_locked` and never clears"
+## "`--cdp-endpoint` says `profile_locked`"
 
-A Scraping Browser profile allows **one live connection**, so the obvious
-reading is that another run holds it. Two profiles measured here say that is
-not always what is happening.
+Almost certainly something took the profile, and on the evidence here the
+likeliest candidate is a plain HTTP request to the endpoint — including the
+"harmless" check you might reach for to see whether it is free.
 
-What was observed, 2026-09-14, against a live endpoint:
+Three profiles, 2026-09-14:
 
-* the credential was fine — the endpoint's HTTP sibling answered `200` with
-  `Chrome/151.0.7922.174`;
-* on the first profile, the WebSocket upgrade **hung for 121 seconds** and
-  then the server hung up. Afterwards it answered `500 profile_locked` on
-  both WebSocket and HTTP, and had **not cleared forty minutes later**;
-* a second, fresh profile answered `500 profile_locked` on its **very first
-  connection attempt**, and was still locked after four minutes of no
-  requests at all.
+| what was done first | result |
+|---|---|
+| `GET /json/version` (answered `200`), then WebSocket | wedged — `profile_locked` on both, **never cleared in 40 min** |
+| `GET /json/version` (answered `200`), then WebSocket | wedged — locked on the first WebSocket attempt, still locked after 4 min of silence |
+| **WebSocket only, no HTTP at all** | **connected in ~3s**, and the pid was reusable by the next run |
 
-So: waiting does not clear it, and it is not necessarily another run of this
-tool. **Nothing on the client side frees a profile in that state** — use a
-different `pid`, or reset the profile from the 2Captcha dashboard.
+So: **do not poll the HTTP endpoint to check whether a profile is free.**
+That a GET claims the profile is not proven, but three for three is a strong
+enough pattern to stop doing it — and there is no need to, because the
+connection you actually want tells you the same thing in one step.
 
-### Do NOT poll the HTTP endpoint to check
-
-An earlier version of this section suggested a "non-destructive" `GET
-/json/version` to see whether a profile is free. Treat that as unsafe: on
-both profiles the first such call answered `200` and everything afterwards
-was locked. Whether the GET itself claims the profile was not established —
-but it is consistent with what was seen, and polling it is exactly what was
-being done to the profile that never recovered. If you want to know whether a
-profile is free, try the connection you actually want and read the error.
+Close sessions cleanly and the pid stays reusable: two consecutive runs
+against the same profile both connected. If one is genuinely wedged, nothing
+on the client side frees it — use a different `pid` or reset it from the
+2Captcha dashboard.
 
 ### What `--cdp-connect-timeout` is and is not for
 
@@ -216,8 +209,26 @@ The default is **150s**, up from the 30s this repo family shipped, because
 the server's own give-up point was measured at 121s and a client that quits
 first quits while the server is still working.
 
-It is **not** a cure for `profile_locked`. The second profile above locked
+It is **not** a cure for `profile_locked` — one of the profiles above locked
 instantly, with no timed-out connect anywhere in its history.
+
+---
+
+## "`--cdp-endpoint` connects but every page is exit 3"
+
+That is what Vrbo currently does to it. Measured 2026-09-14, `country-us`
+endpoint: connected in ~3s, `Captcha.setAutoSolve` enabled, and then HTTP
+**429** with a 116 KB `Bot or Not?` page on the first request and on both
+retries, `whichChallenge: datadome-challenge`.
+
+The remote browser is a real Chrome — which is what this site cares about
+most — but its exit address is refused. Nothing on your side fixes that, and
+no solve is attempted, because DataDome is not something this repo or the
+endpoint's auto-solve can answer.
+
+Use a local real Chrome (the default) and a residential `--proxy` if you
+need to spread the `/graphql` rate limit. Re-test the Scraping Browser
+occasionally: an exit pool is not a constant.
 
 ---
 
