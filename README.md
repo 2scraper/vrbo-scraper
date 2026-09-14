@@ -344,10 +344,23 @@ nothing to solve:
 
 * **The path that works never sees a challenge.** A residential proxy with a
   real local Chrome returned 50/50 cards and no challenge at all.
-* **The path that sees one cannot use the answer.** A DataDome solution is
-  an **IP-bound cookie** — it is only valid from the proxy passed in the
-  task. The Scraping Browser leaves from 2Captcha's own exit, not from your
-  proxy, so a solved cookie cannot be matched to the browser presenting it.
+* **The path that sees one almost certainly cannot use the answer.** What a
+  DataDome solve returns is a `datadome=` cookie, and DataDome binds that
+  cookie to the session that earned it — address, user agent, client
+  fingerprint. The evidence for the binding here is the API's own contract
+  rather than a test: `DataDomeSliderTask` has **no proxyless variant**, and
+  requires `proxyAddress`/`proxyPort`/`proxyLogin`/`proxyPassword` alongside
+  `websiteURL`, `captchaUrl` and `userAgent`. A solver needs your proxy in
+  order to solve *from your address*, so that the cookie matches the client
+  that will present it.
+
+  The Scraping Browser leaves from 2Captcha's own exit, not from the proxy
+  you would pass to the task — an address you neither control nor know in
+  advance. Cookie earned at one address, presented from another.
+
+  NOT MEASURED, and said so: no test was run here that solves at one address
+  and replays at another against vrbo.com. This is reasoning from DataDome's
+  model and that API signature, not a measurement.
 
 If Vrbo ever starts challenging residential exits, that calculation changes
 and a solver becomes worth adding. It is not worth adding for a challenge
