@@ -6,11 +6,16 @@
 # --- scrape output -------------------------------------------------------
 *.json
 *.csv
-!package.json
+# package.json is gone with the old Node prototype; the exception is not.
 # Committed on purpose: a real 5-row excerpt of a real run, so a reader can see
 # the exact output shape without installing anything.
 !sample_output.json
 !sample_output.csv
+# The offline suite's fixtures. Caught by `*.json` above and therefore NOT
+# committed on the first try — smoke_test.py imports it at module level, so
+# every CI job died with FileNotFoundError while the whole suite was green
+# locally. Exactly the class of thing only a clean checkout finds.
+!fixtures_generated.json
 catawiki_products.*
 catawiki_products_*.*
 

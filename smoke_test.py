@@ -111,6 +111,20 @@ def _raises(fn):
 
 
 _FIXTURE_PATH = os.path.join(REPO_ROOT, "fixtures_generated.json")
+if not os.path.exists(_FIXTURE_PATH):
+    # Said in words rather than as a bare FileNotFoundError, because the
+    # first time this happened it was not missing from the disk — it was
+    # missing from the COMMIT. `.gitignore` carries a blanket `*.json` (a
+    # scraper's own output is large and stale by the time anyone reads it),
+    # which swallowed it silently: the whole suite was green locally and
+    # every CI job died at import. `test_required_files_are_committed` now
+    # catches that case directly.
+    raise SystemExit(
+        f"fixtures_generated.json is missing from {REPO_ROOT}.\n"
+        f"If you are in a clean checkout, it should have been committed — "
+        f"check that .gitignore's `*.json` rule still carries the "
+        f"`!fixtures_generated.json` exception.\n"
+        f"If you are regenerating fixtures, run: python3 make_fixtures.py")
 with open(_FIXTURE_PATH, encoding="utf-8") as _f:
     FIXTURES = json.load(_f)
 URLS = FIXTURES["_URLS"]
@@ -1378,6 +1392,38 @@ def test_sample_output():
     return ok
 
 
+def test_required_files_are_committed():
+    group("Everything the suite needs is tracked by git")
+    # A blanket `*.json` / `*.csv` in .gitignore — which this repo wants,
+    # because a scraper's own output is large and stale — silently swallowed
+    # `fixtures_generated.json`. The suite was green on the machine that
+    # wrote it and every CI job died with FileNotFoundError at import. A
+    # check that a file EXISTS cannot see that; only asking git can.
+    ok = True
+    import subprocess
+    required = ("fixtures_generated.json", "sample_output.json",
+                "sample_output.csv", ".env.example", "README.md",
+                "CHANGELOG.md", "Dockerfile", "requirements.txt",
+                ".github/ci_checks.py", ".github/workflows/tests.yml",
+                ".github/workflows/canary.yml", "tests/test_smoke.py")
+    result = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT,
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        print("  SKIP  not a git checkout — cannot verify what is committed")
+        return ok
+    tracked = set(result.stdout.split())
+    for name in required:
+        ok &= check(f"{name} is committed, not just present on disk",
+                    name in tracked)
+    # And the other direction: nothing a scraper produced should be.
+    leaked = [f for f in tracked
+              if re.search(r"_debug\.(html|png)$|\.meta\.json$|^captures/|^\.env$",
+                           f)]
+    ok &= check(f"no run output or capture is committed "
+                f"{'' if not leaked else leaked[:3]}", not leaked)
+    return ok
+
+
 def test_readme_claims():
     group("README numbers exist and are dated")
     ok = True
@@ -1425,6 +1471,7 @@ def main() -> int:
     ok &= test_no_capture_leaks()
     ok &= test_ci_checks_is_wired_up()
     ok &= test_sample_output()
+    ok &= test_required_files_are_committed()
     ok &= test_readme_claims()
 
     print()
