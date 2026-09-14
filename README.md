@@ -324,8 +324,9 @@ in different currencies, so the diff would be all noise.
 python3 smoke_test.py     # or: pytest
 ```
 
-Offline, no network, and it passes with no engine library installed (the
-skips are reported, and CI fails on an unexpected one). Fixtures are cut from
+Over 450 checks (473 on 2026-09-14). Offline, no network, and it passes with
+no engine library installed — the skips are reported, and CI fails on an
+unexpected one. Fixtures are cut from
 real captures by `make_fixtures.py`, which proves each one parses
 *identically* to its untrimmed original, column for column.
 

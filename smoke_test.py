@@ -84,11 +84,14 @@ ENGINES = ("playwright_scraper", "selenium_scraper", "puppeteer_scraper")
 SHARED_MODULES = {"page_flow": page_flow, "product_parser": product_parser}
 
 _failures = []
+_total_checks = 0
 
 
 def check(label, condition):
     """Print and record one check. Returns the condition so callers can
     accumulate with `ok &= check(...)`."""
+    global _total_checks
+    _total_checks += 1
     if condition:
         print("  PASS  %s" % label)
     else:
@@ -1445,6 +1448,13 @@ def test_readme_claims():
     return ok
 
 
+# The floor the README and CHANGELOG state. A FLOOR rather than the exact
+# count, because an exact count goes stale the next time anyone adds a check
+# and a stale number in a README is worse than no number (§17). Raise it when
+# it is comfortably passed; it can only ever be an under-claim.
+CLAIMED_CHECK_FLOOR = 450
+
+
 def main() -> int:
     ok = True
     skips = []
@@ -1473,6 +1483,14 @@ def main() -> int:
     ok &= test_sample_output()
     ok &= test_required_files_are_committed()
     ok &= test_readme_claims()
+
+    passed = _total_checks - len(_failures)
+    if passed < CLAIMED_CHECK_FLOOR:
+        ok = False
+        _failures.append(
+            f"the README and CHANGELOG claim over {CLAIMED_CHECK_FLOOR} "
+            f"checks and only {passed} ran — either checks were removed or "
+            f"the claim needs lowering")
 
     print()
     if _failures:

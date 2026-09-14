@@ -34,8 +34,11 @@ in the old CLI carries over.
   writes nothing, so a failure cannot overwrite a good result.
 - **`diff_runs.py`** with a `stay_changed` bucket: a price move that comes
   with a moved stay is not a repricing, and `--fail-on-change` ignores it.
-- **454 offline checks** over fixtures cut from real captures, each proved to
-  parse identically to its untrimmed original.
+- **Over 450 offline checks** (473 on 2026-09-14) over fixtures cut from
+  real captures, each proved to parse identically to its untrimmed original.
+  Stated as a floor on purpose: an exact count goes stale the next time
+  anyone adds a check, and the suite asserts the floor rather than the
+  number.
 - A daily canary that needs no secret, and reports an access condition as a
   warning rather than painting the badge red for something that is nobody's
   bug.
