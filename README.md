@@ -342,58 +342,57 @@ access to this site today. **A residential `--proxy` is the paid product
 that addresses the actual constraint here** (the `/graphql` rate limit on
 page turns).
 
-### DataDome on this site IS solvable — and this repo still does not do it
+### DataDome: 2Captcha solves it, and applying the solution did not work
 
-2Captcha sells a DataDome solver, and the obvious question is whether it
-works here. Measured 2026-09-14, end to end:
+Worth separating those two halves, because they have different answers.
+
+**Solving succeeds.** `DataDomeSliderTask` is the right task type — the widget
+really is a slider ("Slide right to secure your access") — and across nine
+attempts on 2026-09-14 it came back solved **five times**, at **$0.00145**
+and 38-68s each. The remaining four were `ERROR_CAPTCHA_UNSOLVABLE`. The
+`captchaUrl` the task needs is readable off the live widget about 3s after it
+mounts; it is NOT in a server-side dump, where the mount point is empty.
+
+**Applying the solution is a different matter, and it was not achieved here.**
+The solver returns a `datadome=` cookie. Injecting it into the browser
+context and reloading produced HTTP 200 once and HTTP 429 twice — and the
+control that matters shows why that first 200 proves nothing:
 
 ```
-challenge induced      HTTP 429   (a bundled Chromium through a proxy —
-                                   this site refuses that browser build,
-                                   which makes it a reliable generator)
-captchaUrl             read off the live widget 3s after it mounts
-                       (the server-side HTML carries an EMPTY mount point)
-DataDomeSliderTask     SOLVED in 49s, cost $0.00145 -> a `datadome` cookie
-retry with the cookie  HTTP 200, 764,666 bytes, the grid
+no solve, no cookie, wait 55s          -> 429
+solve, deliberately DO NOT set cookie  -> 429
+solve, set cookie (bare name=value)    -> 200 once, 429 once
+solve, set cookie with all attributes,
+  read back and verified present       -> 429
+NOTHING AT ALL, same exit, minutes
+  later                                -> 200, no challenge even raised
 ```
 
-So a solve **does** buy access, and it buys it even for a browser the site
-would otherwise refuse outright.
+That last line is the one that settles it. The same exit served a clean 200
+with no solve and no cookie in play, so a 200 following a cookie is
+indistinguishable from the site simply not challenging that request. Access
+landed roughly one time in three **whether or not** a solution was applied.
 
-**The one thing that has to be true: the solve and your later requests must
-leave from the same address.** DataDome binds the cookie to the exit that
-earned it. That is easy to get wrong with a rotating proxy — an earlier run
-here failed for exactly that reason, on a session string carrying
-`sessTime-5` while the solve took over two minutes: the window rotated, the
-cookie was earned at one exit and presented from another, and the retry came
-back 429. Re-run with a fresh sticky session at `sessTime-30`, with the
-browser's exit verified identical before and after the solve, and it works.
+One concrete defect on our side is worth recording for anyone who tries
+again: the solver's cookie string carries only `expires` and `domain` — no
+`Secure`, no `SameSite` — while the cookie the challenge page sets itself is
+`Secure` and `SameSite=Lax`. Setting it back without those attributes may
+well be wrong. A run that parsed every attribute and then read the cookie
+back out of the context to confirm it had landed still got a 429, so that is
+not the whole story either.
 
-Success rate is not 1. Across four attempts, two came back
-`ERROR_CAPTCHA_UNSOLVABLE` before one solved; call it an order of magnitude
-rather than a rate at n=4.
+The likely missing piece, untested: DataDome's answer is normally submitted
+by the challenge page's own JavaScript, and Expedia has a further step on top
+of it — the page config carries `"validatePath": "/botOrNot/validate"`.
+Pasting a cookie skips both. A working integration probably has to drive the
+widget rather than swap a cookie behind it.
 
-**Why this repo still ships no DataDome path**, now that it demonstrably
-could:
-
-* **The recommended path never meets one.** A real local Chrome on a
-  residential exit returns 50/50 cards with no challenge at all and no cost.
-  Paying $0.00145 and waiting 50s to get past a wall you can walk around is
-  the wrong default.
-* **It needs infrastructure the rest of this tool does not.** A sticky proxy
-  session that outlives the solve, and a live browser to read the widget's
-  `captchaUrl` from — which means it cannot help the browserless
-  `scraper_api_client.py` at all.
-* **It cannot help `--cdp-endpoint` either.** The Scraping Browser leaves
-  from 2Captcha's own exit, not from the proxy you would pass to the task, so
-  the binding above cannot be satisfied there.
-
-Where it *would* earn its keep is scraping at volume from addresses that are
-already scored — datacentre ranges, or a residential pool under load. If that
-is your situation, the measurements above say it is a viable fallback rather
-than a dead end, and the shape of the integration is: induce, read
-`captchaUrl` from the mounted iframe, solve with your proxy, set the cookie,
-continue **through that same exit**.
+**So: not a dead end, but not a solved problem either, and this repo ships no
+DataDome path.** Beyond the above, the reasons are unchanged: the recommended
+path never meets a challenge at all — a real local Chrome on a residential
+exit returns 50/50 cards for nothing — and a solve cannot help either the
+browserless client or `--cdp-endpoint`, whose exit is not one you can hand to
+a solver.
 
 > **Still not exercised: this repo's own solver path.** It fires only when
 > Expedia's handler picks reCAPTCHA, and across every run here — local,

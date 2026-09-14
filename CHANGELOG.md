@@ -87,19 +87,19 @@ in the old CLI carries over.
   site today. Tried on five exit countries (`us`, `de`, `gb`, `nl`, `ca`):
   all five refused, so it is the exit pool that is scored, not a geography.
 
-- **DataDome**: solvable on this site, measured. A challenge induced on a
-  controlled exit, `DataDomeSliderTask` solved in 49s for $0.00145, and the
-  resulting cookie turned an HTTP 429 into **HTTP 200 and the grid** — for a
-  browser the site otherwise refuses outright. The condition is that the
-  solve and the later requests leave from the SAME exit: DataDome binds the
-  cookie to the address that earned it, and an earlier attempt on a
-  `sessTime-5` session failed purely because the window rotated mid-solve.
-  Roughly one attempt in three solves (n=4).
-
-  Not wired into the repo, and the README says why: the recommended path
-  never meets a challenge, the solve needs a sticky proxy session this tool
-  does not manage, and it cannot help either the browserless client or
-  `--cdp-endpoint`.
+- **DataDome**: 2Captcha solves it; applying the solution was NOT achieved.
+  Two halves with different answers, and they are reported separately.
+  Solving works — `DataDomeSliderTask` is the right type, five successes in
+  nine attempts at $0.00145 and 38-68s each. Applying the returned cookie did
+  not demonstrably grant access: 200 once and 429 twice, against a control
+  run in which the very same exit served a clean 200 with **no solve and no
+  cookie at all**. Access landed about one time in three whether or not a
+  solution was applied, so no effect is visible above that noise. The README
+  carries the full control table, the one defect found on our side (the
+  solver's cookie string omits `Secure`/`SameSite`, which the page's own
+  cookie has), and the untested hypothesis that the answer has to be driven
+  through the widget rather than pasted behind it, since Expedia has its own
+  `/botOrNot/validate` step on top.
 
 ### Not verified
 
