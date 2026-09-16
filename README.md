@@ -1,291 +1,500 @@
-# VRBO Scraper — Open-Source Vacation Rental Data Extraction
+# vrbo-scraper
 
-<p align="center">
-  <img src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/node-18%2B-green?logo=node.js&logoColor=white" alt="Node 18+">
-  <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License">
-  <img src="https://img.shields.io/badge/CAPTCHA%20solving-2captcha.com-orange" alt="2captcha">
-  <img src="https://img.shields.io/badge/proxies-2prx.com-blueviolet" alt="2prx">
-</p>
+[![release](https://img.shields.io/github/v/release/2scraper/vrbo-scraper?sort=semver)](https://github.com/2scraper/vrbo-scraper/releases)
+[![tests](https://github.com/2scraper/vrbo-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/2scraper/vrbo-scraper/actions/workflows/tests.yml)
+[![canary](https://github.com/2scraper/vrbo-scraper/actions/workflows/canary.yml/badge.svg)](https://github.com/2scraper/vrbo-scraper/actions/workflows/canary.yml)
+[![python](https://img.shields.io/badge/python-3.9%20%E2%80%93%203.12-blue)](pyproject.toml)
+[![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
+[![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20pyppeteer-lightgrey)](#engines)
+[![runs without an account](https://img.shields.io/badge/runs%20without-an%20account-brightgreen)](#do-you-need-any-of-the-paid-products)
 
-Free, open-source scraper for **[vrbo.com](https://www.vrbo.com)** vacation rental listings. Extracts property titles, pricing, ratings, reviews, amenities, images, availability, and more — across **all VRBO categories** (houses, condos, cabins, villas, apartments, cottages, chalets, townhouses, studios).
+Scrapes **Vrbo** property listings — a search grid, or one property's own
+page — into JSON or CSV with a stable column schema, a run-metadata sidecar,
+and exit codes that tell "blocked" from "empty" from "partial".
 
-Three implementations are included so you can pick the stack you're most comfortable with:
+Works on Vrbo's five storefronts, which are five different catalogues:
+`vrbo.com`, `fewo-direkt.de`, `abritel.fr`, `bookabach.co.nz`,
+`stayz.com.au`.
 
-| Script | Stack | Best For |
-|--------|-------|----------|
-| `vrbo_scraper_playwright.py` | **Playwright** (Python) | **Recommended** — fastest, most reliable |
-| `vrbo_scraper_selenium.py` | Selenium + undetected-chromedriver (Python) | Teams already using Selenium |
-| `vrbo_scraper_puppeteer.js` | Puppeteer + stealth plugin (Node.js) | JavaScript / Node.js workflows |
-
----
-
-## Features
-
-- **Three-layer extraction** — API/XHR interception → embedded JSON parsing → adaptive DOM scraping
-- **All VRBO property categories** — houses, condos, cabins, villas, apartments, and more
-- **Search + detail scraping** — search results pages and individual property pages
-- **CAPTCHA bypass** — automatic reCAPTCHA v2/v3, hCaptcha, and Cloudflare Turnstile solving via [2captcha.com](https://2captcha.com/?from=vrbo-scraper)
-- **Proxy support** — rotate residential & datacenter proxies via [2prx.com](https://2prx.com/?from=vrbo-scraper)
-- **Stealth mode** — fingerprint randomization, WebGL spoofing, navigator overrides
-- **Human-like behavior** — random delays, mouse movements, natural scrolling patterns
-- **Flexible output** — JSON or CSV
-- **Pagination** — automatically follows result pages
-- **Headed or headless** — debug visually or run in CI/CD
-
----
-
-## How It Works — Three-Layer Extraction
-
-VRBO is a heavily JavaScript-rendered SPA. Static CSS selectors break frequently. Our scraper uses a cascading three-layer extraction strategy for maximum resilience:
-
-1. **API/XHR Interception** — Captures listing data directly from VRBO's internal GraphQL and REST API responses as the page loads. This yields the cleanest, most complete data.
-2. **Embedded JSON Parsing** — Scans the page for `__NEXT_DATA__`, `application/ld+json`, and inline `<script>` blobs that contain serialized listing data.
-3. **Adaptive DOM Scraping** — Falls back to DOM traversal: finds property links by URL pattern, walks up to card containers, and extracts data from visible text using regex.
-
-All three strategies run on every page. Results are merged and deduplicated by property ID or URL.
-
-**Debugging:** If the scraper returns 0 results, run with `--debug --headed` to inspect the page visually and save diagnostic screenshots.
+> **Read this first if you only read one thing.**
+> Whether Vrbo answers you is mostly about **how your exit address is
+> scored**, and it is noisy: the same address serves some requests and
+> challenges others minutes apart. Plan for a challenge you cannot always
+> avoid, rather than for a trick that prevents one.
+>
+> Measured 2026-09-14, direct connection, bundled Chromium and real Chrome
+> interleaved, six requests each: **12 of 12 served**. On a clean address the
+> browser build made no difference at all.
+>
+> An earlier reading of this said the opposite — that the browser binary was
+> the gate — on the strength of three single requests taken minutes apart
+> (`curl` 429, bundled Chromium 429, real Chrome 200). That is one sample per
+> arm on a process later measured serving roughly one request in three even
+> from an exit it was otherwise challenging, so it did not support the claim.
+> It is corrected here rather than quietly dropped.
+>
+> Real Chrome is still this repo's default (`--browser-channel chrome`) and
+> `playwright install chrome` is still worth doing — it is a more faithful
+> client and costs nothing. Just do not expect it to be the difference
+> between working and not.
 
 ---
 
-## Extracted Data Fields
-
-| Field | Description |
-|-------|-------------|
-| `title` | Property listing title |
-| `property_id` | VRBO property identifier |
-| `url` | Direct link to the listing |
-| `price_per_night` | Nightly price (USD) |
-| `price_text` | Full price string as displayed |
-| `rating` | Guest rating (e.g., 4.8) |
-| `reviews_count` | Total number of reviews |
-| `bedrooms` | Number of bedrooms |
-| `bathrooms` | Number of bathrooms |
-| `sleeps` | Max guest capacity |
-| `property_type` | House, Condo, Cabin, Villa, etc. |
-| `image_url` | Main listing image |
-| `description` | Full property description* |
-| `amenities` | List of amenities* |
-| `host` | Host/owner info* |
-| `location` | Property address/area* |
-| `house_rules` | House rules list* |
-| `images` | All property images (up to 20)* |
-| `scraped_at` | Timestamp of extraction |
-
-*Fields marked with \* are available when using the `--details` flag (individual property pages).
-
----
-
-## Quick Start
-
-### Playwright (Recommended)
+## Install and run
 
 ```bash
-# Install dependencies
-pip install playwright twocaptcha-python
-playwright install chrome           # Real Chrome — NOT chromium!
+git clone https://github.com/2scraper/vrbo-scraper && cd vrbo-scraper
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-playwright.txt
+playwright install chrome            # the default channel; see the box above
 
-# Basic search
-python vrbo_scraper_playwright.py --destination "Orlando, FL"
-
-# Full options (proxy recommended for reliable results)
-python vrbo_scraper_playwright.py \
-  --destination "Maui, Hawaii" \
-  --checkin 2025-08-01 \
-  --checkout 2025-08-07 \
-  --max-pages 10 \
-  --max-properties 100 \
-  --details \
-  --format csv \
-  --output maui_rentals.csv \
-  --proxy "http://user:pass@gate.2prx.com:8080" \
-  --captcha-key "YOUR_2CAPTCHA_API_KEY"
+python3 playwright_scraper.py \
+  --url "https://www.vrbo.com/search?destination=Orlando,%20Florida,%20United%20States%20of%20America" \
+  --pages 2 --out orlando
 ```
 
-> **Important:** VRBO uses Akamai Bot Manager which blocks headless Chromium.
-> The scraper automatically uses real Chrome (`channel="chrome"`) and a warm-up phase.
-> For the best success rate, add a residential proxy via `--proxy`.
+That writes `orlando.json`, `orlando.csv` and `orlando.meta.json`.
 
-### Selenium
-
-```bash
-pip install selenium undetected-chromedriver twocaptcha-python
-
-python vrbo_scraper_selenium.py \
-  --destination "Cancun, Mexico" \
-  --max-pages 5 \
-  --format json
-```
-
-### Puppeteer (Node.js)
-
-```bash
-npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth 2captcha
-
-node vrbo_scraper_puppeteer.js \
-  --destination "Lake Tahoe, CA" \
-  --max-pages 5 \
-  --format json
-```
+**Install exactly one engine.** The three engines' pins are mutually
+unsatisfiable (`playwright` and `pyppeteer` disagree on `pyee`; `pyppeteer`
+and `selenium` on `urllib3`). Use a virtualenv per engine if you need more
+than one.
 
 ---
 
-## CLI Options
+## The four things that will surprise you
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--destination`, `-d` | Search location (required) | — |
-| `--checkin` | Check-in date (`YYYY-MM-DD`) | — |
-| `--checkout` | Check-out date (`YYYY-MM-DD`) | — |
-| `--max-pages` | Maximum search result pages | `5` |
-| `--max-properties` | Max properties to collect (`0` = no limit) | `0` |
-| `--details` | Scrape individual property pages for full data | `false` |
-| `--format` | Output format: `json` or `csv` | `json` |
-| `--output`, `-o` | Output file path | auto-generated |
-| `--proxy` | Proxy URL (`http://user:pass@host:port`) | — |
-| `--captcha-key` | 2captcha.com API key | — |
-| `--headed` | Run browser in visible mode | `false` |
-| `--debug` | Save debug screenshots and extra logging | `false` |
+### 1. A dateless search prices every property on a different night
 
----
+With no dates in the URL, Vrbo quotes each property **its own cheapest
+one-night stay**. Three cards in one measured load:
 
-## CAPTCHA Solving with 2captcha.com
+```
+Quiet Oasis in Lovely Neighborhood   $172   for 1 night   Sep 16 - Sep 17
+The Coach House                      $295   for 1 night   Sep 24 - Sep 25
+The Point Hotel & Suites Orlando      $81   for 1 night   Sep 28 - Sep 29
+```
 
-VRBO may present CAPTCHAs during scraping. This scraper integrates with [2captcha.com](https://2captcha.com/?from=vrbo-scraper) to solve them automatically:
+Those prices are **not comparable to each other**, and the same row will
+appear to change price between two runs when all that moved was the date.
+The `stay_dates` column carries the window verbatim so you can see it, and
+the run warns about it at startup.
 
-| CAPTCHA Type | Supported |
+**For price monitoring, pin the stay:**
+
+```bash
+--url "https://www.vrbo.com/search?destination=...&startDate=2026-11-14&endDate=2026-11-16&adults=2"
+```
+
+Then `stay_dates` is **null on every row** — measured, 50 of 50 — because the
+card no longer needs to state a window you already asked for. A null there is
+the signal that your prices *are* comparable. `diff_runs.py` knows this: a
+price move that comes with a moved `stay_dates` is reported as
+`stay_changed`, not `changed`, and `--fail-on-change` ignores it.
+
+### 2. Pagination is a button, and the obvious URL tricks silently lie
+
+There is no `link[rel=next]`, no `a[rel=next]`, no `<link rel=canonical>` and
+no `hreflang` set anywhere on a listing page. Page 2 is
+`button[data-stid="next-button"]`, which fires a GraphQL POST and leaves the
+address bar untouched.
+
+Worse, the conventions you would reach for do not fail — they return page 1:
+
+| tried | result |
 |---|---|
-| reCAPTCHA v2 | ✅ |
-| reCAPTCHA v3 | ✅ |
-| hCaptcha | ✅ |
-| Cloudflare Turnstile | ✅ |
+| `&startIndex=50` | HTTP 200, counter still `1 - 50 of 300+`, same cards |
+| `&page=2` | HTTP 200, counter still `1 - 50 of 300+`, same cards |
 
-**Setup:**
+A scraper built on either would find no new listings, conclude the catalogue
+was exhausted, and report a **complete** run holding a sixth of it. This one
+presses the site's own button instead, strictly sequentially, and **refuses
+`--concurrency` above 1** with that as the reason. Run several searches in
+parallel instead, one process each.
 
-1. Sign up at [2captcha.com](https://2captcha.com/?from=vrbo-scraper)
-2. Get your API key from the dashboard
-3. Pass it with `--captcha-key YOUR_KEY`
+### 3. The page turn is rate limited separately from the page
 
-Or set the environment variable:
+The data behind a next-press comes over `POST /graphql`, and that endpoint
+has its own limiter. Measured: the search page kept answering **HTTP 200**
+while every `/graphql` POST behind a press came back **HTTP 429**
+(`{"error":"Too Many Requests","message":"Provisioned request rate has been
+exceeded"}`) and the site's own client gave up.
+
+When that happens the run reports **`partial`, exit 6** — never "the listing
+ended" — and says how many 429s it counted. `--delay` (default **5.0s**,
+higher than the family default) is the cheap lever; `--proxy-file` is the one
+that scales.
+
+### 4. The results list is an inner scroller, and the page body never scrolls
+
+`document.body.scrollHeight === window.innerHeight` on every capture. The
+grid lives in `.scrollable-result-section`. Measured: scrolling the *window*
+12 times changed nothing (18 cards before, 18 after); scrolling the
+*container* reached **50 of 50 in two rounds**. First paint varies with the
+split-view layout — 3 to 18 cards on the same URL and viewport — so almost
+every row on a page comes from the scroll.
+
+---
+
+## How you know you got everything
+
+The listing states its own size: `1 - 50 of 300+` in the pagination control.
+So completeness here is **arithmetic, not a threshold** — if the page says it
+holds items 1 to 50 and the run merged 40 rows, ten cards never loaded. That
+is reported per page, recorded in the sidecar as `cards_missing`, and
+**downgrades the run to `partial`**, because a consumer reading
+`status: complete` beside a 31-card hole would take it for a delisting.
+
+The German storefront writes the same counter as `1–50 von >300` — en dash,
+floor marker on the other side — which is why it is parsed as "the integers
+in that text".
+
+---
+
+## Output
+
+One row per property. 26 columns; the first 14 are this repo family's shared
+prefix, in the family's order, so a consumer written against a sibling repo
+reads them unchanged.
+
+| column | notes |
+|---|---|
+| `source` | which storefront — **not constant**, and not decorative |
+| `sku` | the property id from the URL path |
+| `expedia_property_id` | Expedia's own id. A **different number** from `sku` on a `/{id}` card (path `2430840` vs `expediaPropertyId=70477069`) |
+| `price`, `currency` | currency from the page's own ISO code, falling back to the host — never a defaulted `"USD"` |
+| `rating`, `rating_scale` | Vrbo rates out of **TEN**. The scale is its own column because the rest of this family publishes five-point ratings under the same name |
+| `review_count` | `1,299 reviews` and `1.614 bewertungen` are 1299 and 1614 |
+| `property_type`, `bedrooms`, `beds`, `property_summary` | the summary line split positionally; the raw line is kept beside it |
+| `location_note` | usually a neighbourhood, sometimes `Kissimmee, 16.3 mi from Orlando` or `10 Min. Fahrt zum Strand`; the street address in `--mode property` |
+| `badges` | `Premier Host` and whatever joins it |
+| `amenities` | see the caveats below |
+| `stay_dates`, `price_note` | verbatim; see surprise #1 |
+| `price_source` | `card` / `card-a11y` / `detail` / `detail-a11y` |
+| `page`, `position` | the pair; `position` restarts per page |
+
+`sample_output.json` and `sample_output.csv` are cut from a real run
+(Orlando, 2026-11-14 → 2026-11-16, 2026-09-14).
+
+**Four family columns are deliberately absent**, each with the measurement
+written down in `output_writer.py`: `original_price` and `discount_pct`
+(**0** strike nodes across 218 cards, 6 captures and 4 storefronts — this
+site has no discount chain on a card), `brand` (a property has no
+manufacturer) and `in_stock` (a search result is bookable for the dates
+quoted, so a `True` would be an inference dressed as a reading).
+
+### Exit codes
+
+`0` ok · `1` crash · `2` bad usage · `3` blocked · `4` zero results ·
+`5` remote API error · `6` partial
+
+A run that finds nothing **writes nothing**, so a failure cannot overwrite
+last night's good output. `--allow-empty` is the opt-out.
+
+---
+
+## Traps that look like bugs
+
+* **`image_url` is null on most rows.** 41 of 50 cards carry no `<img>`
+  element at all — the gallery is not mounted below the fold. A null here is
+  an unmounted gallery, not a property without photos.
+* **`amenities` is empty on whole runs.** Present on 18 of 18 cards in one
+  capture and 0 of 50 in another of the same URL minutes later. It is an A/B
+  variant of the card, not a parsing failure.
+* **Vrbo search returns hotels and aparthotels**, not only whole-home
+  rentals — "The Point Hotel & Suites Orlando", `Aparthotel · 1 bedroom ·
+  2 beds`. That is the site's inventory, not a wrong URL.
+* **A card's `latLong` query parameter is the SEARCH centre**, identical on
+  every card, not the property's own position. It is stripped and not
+  recorded; the property page has the real address.
+* **Vrbo silently ignores filter parameters it does not recognise.** A search
+  with `price_max=1&minBedrooms=10` came back with 18 normal cards and
+  `1 - 50 of 300+`. Use the site's own filter UI and copy the resulting URL.
+* **`homeaway.com` redirects to `vrbo.com`** and serves nothing of its own.
+  The scraper refuses it *with that reason* rather than claiming it is not a
+  Vrbo site.
+
+---
+
+## Engines
+
+| engine | notes |
+|---|---|
+| `playwright_scraper.py` | **Recommended.** Needs `--browser-channel chrome` (the default) — `playwright install chrome` |
+| `selenium_scraper.py` | Drives the Chrome you already have, so it gets the right browser for free. **Cannot authenticate a proxy** (`--proxy-server` has nowhere to put a password) and **cannot use an authenticated CDP endpoint** (`debuggerAddress` is a bare `host:port`) |
+| `puppeteer_scraper.py` | pyppeteer is effectively unmaintained. It downloads its **own Chromium**, which this site refuses, so `--chromium-path /path/to/chrome` is required in practice. It warns before the run rather than after a blocked page |
+| `scraper_api_client.py` | One HTTP request per page via the 2Captcha Scraper API, no local browser. **Measured on this site**: HTTP 200, 3.2 MB, and **3 of 50 cards** at $0.0005 — see below |
+
+All three browser engines produce the same rows. Measured on three live runs
+of the same Orlando search on 2026-09-14: 50 rows each, and on the 38
+properties all three runs happened to share, **every substantive column
+agreed** — title, price, currency, rating, rating_scale, review_count,
+property_type, bedrooms, beds, location_note, stay_dates,
+expedia_property_id, price_note, sku, url, source. The only differences were
+`scraped_at`, `position` (a live personalised search reorders between runs),
+`image_url` and `badges` (both viewport- and A/B-dependent, as above).
+
+Engine flag differences are asserted in both directions by the test suite, so
+closing one needs a README edit rather than a quiet patch:
+
+* `--browser-channel` — Playwright only
+* `--chromium-path` — pyppeteer only
+* `--cdp-connect-timeout` — Playwright and pyppeteer only (Selenium cannot
+  use an authenticated CDP endpoint at all)
+* `--locale`, `--fingerprint`, `--fp-tags`, `--fp-country` — Playwright and
+  Selenium only
+
+---
+
+## Do you need any of the paid products?
+
+**No.** An ordinary local Chrome on an ordinary residential connection reads
+this site fine: every measurement in this README was taken that way, with no
+key and no proxy.
+
+What the 2Captcha products buy here, behind one key
+([2captcha.com](https://2captcha.com)):
+
+* **Proxies** — **the one that works here**, measured 2026-09-14: a 2Captcha
+  residential exit (`region-be`) driving a real local Chrome returned
+  **50/50 cards at 100% price coverage, `status: complete`, and no challenge
+  of any kind**. Note what it is and is not for: a proxy does **not** get the
+  wrong browser past the front door, it spreads the `/graphql` rate limit
+  that stops a deep multi-page run.
+* **The Scraping Browser API** (`--cdp-endpoint`) — a remote browser, so you
+  do not run one. **Measured refused by Vrbo on 2026-09-14** — see below
+  before spending anything on it. Selenium cannot reach it at all (see
+  above).
+* **Fingerprints** (`--fingerprint`) — a consistent device identity.
+* **Captcha solving** — see the honest limits below.
+
+### The Scraper API gets the top of the page, not the page
+
+Measured 2026-09-14 against a live Orlando search, one request, **$0.0005**:
+
+```
+HTTP 200, 3,219,172 bytes of HTML
+3 of 50 cards parsed — every column the card publishes, fully populated
+```
+
+Three is not a failure, it is the **first paint**. This path renders but
+cannot scroll, and on this site almost every row comes from scrolling an
+inner container. It also comes back **without the pagination counter**, so
+the completeness oracle the browser engines rely on is not available: the
+client cannot tell you how much it missed.
+
+So use it to see what is at the top of a search cheaply — a work list, an
+availability spot-check, "is this property still listed" — and use a browser
+engine when you want the page. Pass the card selector or you will get a shell
+with nothing in it:
 
 ```bash
-export TWOCAPTCHA_API_KEY="your_key_here"
+python3 scraper_api_client.py --url "https://www.vrbo.com/search?destination=..." \
+  --wait-element '[data-stid="lodging-card-responsive"]'
 ```
+
+### The exit does not change the storefront
+
+Measured on the same run: a **Belgian** residential exit fetching
+`vrbo.com` still got `vrbo.com`, still priced in **USD**, and produced rows
+identical in shape to a local run. Vrbo does not geo-redirect by exit
+address — the storefront is the hostname, which is why there is no
+`--country` flag anywhere in this repo.
+
+### `--fingerprint` is verified end to end
+
+Measured 2026-09-14: a fresh fetch from the Fingerprint API, and the
+fingerprint actually applied — user agent, `locale`, `timezone_id`
+(`America/New_York` for a US fingerprint), viewport and screen all set on the
+browser context, plus the patch script. A live run with it returned 50/50
+cards at 100% price coverage.
+
+Pass **one** OS-family tag (`--fp-tags Windows`). A list is rejected by the
+API with HTTP 400 — `Windows,Chrome,Desktop` was this repo family's default
+for months and made `--fingerprint` fail on every invocation in four repos at
+once.
+
+### The Scraping Browser API connects — and Vrbo refuses it
+
+Measured 2026-09-14 with a live `country-us` endpoint. The client side is
+fine; the site is not:
+
+```
+connected over CDP in ~3s
+Captcha.setAutoSolve enabled
+page 1  -> HTTP 429, "Bot or Not?", 116,035 bytes
+        retried twice through the same path — 429 again, both times
+        whichChallenge: datadome-challenge
+exit 3
+```
+
+Tried on **five exit countries** with the same profile — `us`, `de`, `gb`,
+`nl`, `ca` — and all five answered HTTP 429 with a ~116 KB `Bot or Not?`
+page. So it is the exit POOL that Expedia has scored, not any one country.
+
+So **this path does not currently get you into Vrbo.** The remote browser is
+a real Chrome, which is the thing this site cares about most — but its exit
+address is refused, and the endpoint's own auto-solve did not clear it.
+
+Note what this is *not* evidence of: DataDome here is solvable in general
+(see below), and the reason a solve cannot rescue THIS path is the exit
+address rather than the challenge. A DataDome cookie is bound to the exit
+that earned it, and the Scraping Browser leaves from 2Captcha's own address
+rather than from a proxy you could pass to a solver.
+
+The engine behaved correctly throughout: it named the vendor, spent nothing,
+and exited 3 rather than writing an empty file over good data.
+
+That may change — an exit pool is not a constant — so the path is kept and
+documented rather than removed. But do not buy it expecting it to solve
+access to this site today. **A residential `--proxy` is the paid product
+that addresses the actual constraint here** (the `/graphql` rate limit on
+page turns).
+
+### DataDome: 2Captcha solves it, and applying the solution did not work
+
+Worth separating those two halves, because they have different answers.
+
+**Solving succeeds.** `DataDomeSliderTask` is the right task type — the widget
+really is a slider ("Slide right to secure your access") — and across nine
+attempts on 2026-09-14 it came back solved **five times**, at **$0.00145**
+and 38-68s each. The remaining four were `ERROR_CAPTCHA_UNSOLVABLE`. The
+`captchaUrl` the task needs is readable off the live widget about 3s after it
+mounts; it is NOT in a server-side dump, where the mount point is empty.
+
+**Applying the solution is a different matter, and it was not achieved here.**
+The solver returns a `datadome=` cookie. Injecting it into the browser
+context and reloading produced HTTP 200 once and HTTP 429 twice — and the
+control that matters shows why that first 200 proves nothing:
+
+```
+no solve, no cookie, wait 55s          -> 429
+solve, deliberately DO NOT set cookie  -> 429
+solve, set cookie (bare name=value)    -> 200 once, 429 once
+solve, set cookie with all attributes,
+  read back and verified present       -> 429
+NOTHING AT ALL, same exit, minutes
+  later                                -> 200, no challenge even raised
+```
+
+That last line is the one that settles it. The same exit served a clean 200
+with no solve and no cookie in play, so a 200 following a cookie is
+indistinguishable from the site simply not challenging that request. Access
+landed roughly one time in three **whether or not** a solution was applied.
+
+One concrete defect on our side is worth recording for anyone who tries
+again: the solver's cookie string carries only `expires` and `domain` — no
+`Secure`, no `SameSite` — while the cookie the challenge page sets itself is
+`Secure` and `SameSite=Lax`. Setting it back without those attributes may
+well be wrong. A run that parsed every attribute and then read the cookie
+back out of the context to confirm it had landed still got a 429, so that is
+not the whole story either.
+
+The likely missing piece, untested: DataDome's answer is normally submitted
+by the challenge page's own JavaScript, and Expedia has a further step on top
+of it — the page config carries `"validatePath": "/botOrNot/validate"`.
+Pasting a cookie skips both. A working integration probably has to drive the
+widget rather than swap a cookie behind it.
+
+**So: not a dead end, but not a solved problem either, and this repo ships no
+DataDome path.** Beyond the above, the reasons are unchanged: the recommended
+path never meets a challenge at all — a real local Chrome on a residential
+exit returns 50/50 cards for nothing — and a solve cannot help either the
+browserless client or `--cdp-endpoint`, whose exit is not one you can hand to
+a solver.
+
+> **Still not exercised: this repo's own solver path.** It fires only when
+> Expedia's handler picks reCAPTCHA, and across every run here — local,
+> proxied and remote — it picked DataDome. The DataDome work above was done
+> with a standalone script against the 2Captcha API, not through this
+> repo's `--solve-captcha`, which deliberately does not offer DataDome to a
+> solver (see above for why).
+
+### Captchas: what this repo can and cannot solve
+
+Vrbo's refusal is Expedia's own **"Bot or Not?"** handler (HTTP 429, app
+`captcha-pwa`, page id `wildcard-challenge-handler`). It is a
+**multiplexer**: its page config names which vendor it picked *this time*,
+as data rather than markup —
+
+```
+"whichChallenge": "datadome-challenge"
+"siteKey": …            (reCAPTCHA v2)
+"recaptchaV3Key": …
+"turnstileSiteKey": …
+"arkoseClientApiUrl": …
+"powComplexity": 20     (a proof-of-work variant)
+```
+
+This repo solves **reCAPTCHA v2/v3 and nothing else**. So a challenge is only
+offered to the solver when `whichChallenge` names reCAPTCHA; every other pick
+— including DataDome, which is what every measured refusal here actually was
+— is reported as **blocked**, and **no solve is attempted and nothing is
+charged**.
+
+That is a deliberate scope choice, not a claim that the others are
+unsolvable: DataDome on this site was solved by hand against the 2Captcha API
+and did buy access (see above). It is not wired in because the recommended
+path never meets a challenge, and because a DataDome solve needs a sticky
+proxy session the rest of this tool does not manage.
+
+Note also that `akamai` is *not* usable as a block marker here. Vrbo is
+fronted by Akamai Bot Manager and every good page loads its sensor script, so
+that string matches an 899 KB page holding the full grid.
 
 ---
 
-## Proxy Support with 2prx.com
+## Configuration
 
-For large-scale scraping, use rotating proxies from [2prx.com](https://2prx.com/?from=vrbo-scraper) to avoid rate limits and IP blocks:
+Credentials go in `.env` beside the scripts, never on a command line — a
+secret in `argv` is readable by anything that can run `ps` and lands in shell
+history.
 
 ```bash
-python vrbo_scraper_playwright.py \
-  --destination "Miami Beach, FL" \
-  --proxy "http://user:pass@gate.2prx.com:8080"
+cp .env.example .env
+python3 env_config.py     # prints what was picked up, WITHOUT secrets
 ```
 
-**Why 2prx.com?**
+Precedence, highest first: an explicit flag → an exported environment
+variable → `.env` → the default. Anything still carrying `{...}` braces is
+treated as unset, so a copied example is never sent to an API as if it were a
+key.
 
-- Residential & datacenter proxy pools
-- Geo-targeting (US, EU, global)
-- Automatic IP rotation
-- High uptime and speed
-- Pay-per-GB pricing
-
----
-
-## Anti-Detect Browser
-
-For the highest success rate on heavily protected pages, combine this scraper with the **[2captcha Anti-Detect Browser](https://2captcha.com/anti-detect-browser)**:
-
-- Real browser fingerprints (Canvas, WebGL, AudioContext, fonts)
-- Unique browser profiles per session
-- Integrated proxy management
-- Cookie and session persistence
-
-[Learn more →](https://2captcha.com/anti-detect-browser)
+Variables: `TWOCAPTCHA_KEY`, `VRBO_CDP_ENDPOINT`, `VRBO_PROXY`, `VRBO_URL`.
 
 ---
 
-## Output Examples
+## Comparing two runs
 
-### JSON
-
-```json
-[
-  {
-    "title": "Oceanfront Paradise — 3BR Condo with Pool",
-    "property_id": "1234567",
-    "url": "https://www.vrbo.com/1234567",
-    "price_per_night": 289,
-    "price_text": "$289 per night",
-    "rating": 4.8,
-    "reviews_count": 142,
-    "bedrooms": 3,
-    "bathrooms": 2,
-    "sleeps": 8,
-    "property_type": "Condo",
-    "image_url": "https://images.vrbo.com/...",
-    "scraped_at": "2025-07-15T10:30:00Z",
-    "source": "vrbo.com"
-  }
-]
+```bash
+python3 diff_runs.py --old monday.json --new tuesday.json
 ```
 
-### CSV
-
-```
-title,property_id,url,price_per_night,rating,reviews_count,bedrooms,bathrooms,sleeps,property_type
-"Oceanfront Paradise — 3BR Condo with Pool",1234567,https://www.vrbo.com/1234567,289,4.8,142,3,2,8,Condo
-```
+It refuses a pair it cannot honestly compare: a `partial` run, two different
+`--mode`s, or **two different storefronts** — they are different catalogues
+in different currencies, so the diff would be all noise.
 
 ---
 
-## Project Structure
+## Tests
 
-```
-vrbo-scraper/
-├── vrbo_scraper_playwright.py   # Primary scraper (Playwright)
-├── vrbo_scraper_selenium.py     # Selenium alternative
-├── vrbo_scraper_puppeteer.js    # Puppeteer / Node.js alternative
-├── requirements.txt             # Python dependencies
-├── package.json                 # Node.js dependencies
-├── README.md                    # This file
-└── LANDING_PAGE.md              # Product landing page content
+```bash
+python3 smoke_test.py     # or: pytest
 ```
 
----
+Over 450 checks (473 on 2026-09-14). Offline, no network, and it passes with
+no engine library installed — the skips are reported, and CI fails on an
+unexpected one. Fixtures are cut from
+real captures by `make_fixtures.py`, which proves each one parses
+*identically* to its untrimmed original, column for column.
 
-## Requirements
-
-### Python (Playwright / Selenium)
-
-- Python 3.10+
-- See `requirements.txt`
-
-### Node.js (Puppeteer)
-
-- Node.js 18+
-- See `package.json`
+`TROUBLESHOOTING.md` covers what to do when a column comes back empty.
 
 ---
 
-## Legal Disclaimer
+## Licence and scope
 
-This tool is provided for **educational and research purposes**. Users are solely responsible for ensuring their use of this scraper complies with VRBO's Terms of Service, applicable laws (including the CFAA, GDPR, and CCPA), and any other relevant regulations. The authors assume no liability for misuse. Always respect `robots.txt` and rate limits.
-
----
-
-## License
-
-MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-## Links
-
-- **Repository**: [github.com/2scraper/vrbo-scraper](https://github.com/2scraper/vrbo-scraper)
-- **CAPTCHA Solving**: [2captcha.com](https://2captcha.com/?from=vrbo-scraper)
-- **Proxies**: [2prx.com](https://2prx.com/?from=vrbo-scraper)
-- **Anti-Detect Browser**: [2captcha.com/anti-detect-browser](https://2captcha.com/anti-detect-browser)
+MIT. This reads pages Vrbo serves to an anonymous visitor. It does not log
+in, does not touch a booking flow, and does not attempt to defeat a challenge
+it cannot legitimately solve. Check Vrbo's terms and your own jurisdiction
+before pointing it at anything at volume, and use `--delay`.

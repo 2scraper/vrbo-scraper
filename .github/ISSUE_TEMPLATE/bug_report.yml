@@ -1,0 +1,135 @@
+name: Bug report
+description: The scraper ran but the result was wrong, empty, or it crashed.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before anything else: never paste an API key, a proxy password or a
+        full `ws://user:pass@...` endpoint into a public issue.** The scrapers
+        mask credentials in their own logs, but raw HTML dumps and the Scraper
+        API's `x-debug` header do not. Replace them with `***`.
+
+        A few things answer most reports faster than we can:
+
+        - **Everything exit 3?** Check whether the run was **headless** before
+          you check anything else. Akamai refuses a headless browser on this
+          site whatever the exit address — measured HTTP 403 from four
+          residential exits and one datacentre address, against HTTP 200 and
+          the full catalogue from those very same addresses with a real
+          window. `--headful` is the default here; a proxy does not fix it,
+          and `--cdp-endpoint` is the other path measured to work.
+        - **`price` null on some rows?** That is almost certainly correct:
+          every blank price is a lot whose reserve has not been met, and the
+          row carries `reserve_price_set: true` to say so. What is NOT
+          correct is a null price with no reserve flag — that one is worth
+          this issue.
+        - **Zero rows?** You may be on a page that has none: one page past the
+          end of a listing, or a search that matched nothing (that one answers
+          200 with "No results" **and 24 suggested lots**, which this scraper
+          deliberately does not parse). Both are exit 4 and correct answers.
+          See [TROUBLESHOOTING.md](../blob/main/TROUBLESHOOTING.md).
+        - **`rating` and `review_count` empty on every row?** Expected: this
+          site publishes no per-lot rating. The seller's feedback is in
+          `seller_score` and `seller_feedback_count` on a `--mode lot` row.
+        - **The run stopped at page 100?** That is the site's own cap, not a
+          bug. Past it the site returns page 100's own lots under HTTP 200.
+        - **Wrong language?** The locale is a path segment (`/en/`, `/nl/`,
+          `/de/`), not something the exit IP decides. Prices are in euro on
+          all 18 locales.
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Which engine
+      options:
+        - playwright_scraper.py
+        - puppeteer_scraper.py
+        - selenium_scraper.py
+        - scraper_api_client.py
+        - fingerprint_client.py
+        - other / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser_route
+    attributes:
+      label: How was the browser reached
+      options:
+        - A browser the script launched itself
+        - A remote browser over --cdp-endpoint
+        - No browser (scraper_api_client.py over plain HTTP)
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: exit_code
+    attributes:
+      label: Exit code
+      description: >-
+        `echo $?` straight after the run. These mean specific things — 3 is a
+        challenge page, 4 is "ran fine, found nothing", 124 is a self-imposed
+        timeout. The table is in the README.
+      placeholder: "4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command
+      description: With credentials replaced by `***`.
+      render: shell
+      placeholder: |
+        python3 playwright_scraper.py \
+          --url "https://www.vrbo.com/en/c/333-watches" \
+          --pages 3 --out grills
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: >-
+        The whole run, not just the last line — the useful detail is usually
+        upstream of the error. Credentials replaced by `***`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      placeholder: >-
+        96 products, as the README says a category page yields.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Please run and paste:
+        ```
+        python3 -c "import sys, platform; print(sys.version, platform.platform())"
+        pip list 2>/dev/null | grep -Ei "playwright|pyppeteer|selenium|beautifulsoup4|requests|webdriver"
+        python3 smoke_test.py | tail -3
+        ```
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The offline suite passes on my machine (`python3 smoke_test.py`)
+          required: true
+        - label: I removed every API key, password and credentialled URL from this report
+          required: true
