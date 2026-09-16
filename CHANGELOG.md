@@ -10,6 +10,20 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+### CI
+
+- **The canary asks for three pages, not two.** Two exercises the next-button
+  walk once, which proves the button was found; three is what catches a
+  cursor that does not advance, and is the family rule. `pages_completed` is
+  already asserted against `PAGES_REQUESTED`, so the change makes the canary
+  strictly stricter. `MIN_ROWS` is deliberately left at 60 — it was measured
+  as a floor for a two-page run, and scaling it to three would be inventing a
+  number no run has produced. It is simply a more conservative floor now, and
+  the note in the workflow says to raise it only when a three-page run has
+  been measured, naming that run.
+
+## [Unreleased]
+
 ## [0.1.0] — 2026-09-14
 
 First release on this repo family's architecture. The previous contents of
