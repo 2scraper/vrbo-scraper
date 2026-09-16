@@ -7,27 +7,29 @@ the site working as designed, and the other half has a one-line answer.
 
 ## "It returns HTTP 429 / `Bot or Not?` / exit 3"
 
-**Check your browser before you check your IP.** This is the single most
-common cause and it has nothing to do with your address:
+**It is your exit address, and the scoring is noisy.** The same address
+serves some requests and challenges others minutes apart. In order of cost:
 
-```bash
-playwright install chrome        # NOT chromium
-```
+1. **Try again**, and put `--delay 10` or more between pages.
+2. **Move to another exit** with `--proxy` or `--proxy-file`.
+3. Wait. A scored address does recover.
 
-Measured 2026-09-14, same residential exit, seconds apart — bundled Chromium
-got 429, real Chrome got 200 and the full grid. The Playwright engine
-defaults to `--browser-channel chrome`; if that channel is not installed it
-says so and falls back, and the fallback is what gets refused.
+**Do NOT go looking at your browser build first.** Measured 2026-09-14,
+bundled Chromium and real Chrome interleaved on a clean address, six requests
+each: **12 of 12 served**, no difference between them. An earlier version of
+this section told you to check the browser first, on the strength of one
+sample per arm — that was wrong, and chasing it wastes time.
 
-Per engine:
+A real browser is still what this repo defaults to, because it is the more
+faithful client and costs nothing:
 
-| engine | what to do |
+| engine | how it gets a real browser |
 |---|---|
-| `playwright_scraper.py` | `playwright install chrome`. `--browser-channel msedge` also works |
-| `selenium_scraper.py` | nothing — it drives the Chrome you already have |
-| `puppeteer_scraper.py` | `--chromium-path /path/to/chrome`. Its own Chromium is the refused build |
+| `playwright_scraper.py` | `playwright install chrome` (`--browser-channel msedge` also works) |
+| `selenium_scraper.py` | nothing to do — it drives the Chrome you already have |
+| `puppeteer_scraper.py` | `--chromium-path /path/to/chrome` |
 
-Only once you have the right browser is a block worth reading as a block. The
+The
 run then tells you which vendor the challenge handler picked, e.g.
 `blocked (datadome-challenge)`, and saves the page to
 `<out>_page1_debug.html` and `.png`.

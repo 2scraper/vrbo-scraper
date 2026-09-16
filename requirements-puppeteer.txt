@@ -2,10 +2,10 @@
 #
 #   pip install -r requirements.txt -r requirements-puppeteer.txt
 #
-# pyppeteer downloads its OWN Chromium on first run, and Vrbo refuses that
-# build: measured on one address seconds apart, bundled Chromium got HTTP 429
-# and real Chrome HTTP 200 with the full grid. So this engine needs to be
-# pointed at an installed browser:
+# pyppeteer downloads its OWN Chromium on first run. Pointing it at an
+# installed Chrome is worth doing — a more faithful client — but it is not
+# the gate an earlier version of this file claimed: the two builds
+# interleaved on a clean address were served 12 of 12. Point it anyway:
 #
 #   python3 puppeteer_scraper.py --chromium-path "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ...
 #   python3 puppeteer_scraper.py --chromium-path /usr/bin/google-chrome ...

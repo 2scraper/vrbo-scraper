@@ -4,11 +4,12 @@
 #   pip install -r requirements.txt -r requirements-playwright.txt
 #   playwright install chrome
 #
-# `chrome`, NOT `chromium`. This is the single most important line in this
-# repo's setup. Measured against Vrbo on 2026-09-14, same residential
-# address, seconds apart: Playwright's bundled Chromium was answered HTTP 429
-# and real Chrome HTTP 200 with the full grid. Installing chromium here gives
-# you a scraper that cannot fetch its own target and looks like a blocked IP.
+# `chrome` rather than `chromium`, and worth doing — a real browser is the
+# more faithful client. It is NOT the difference between working and not:
+# measured 2026-09-14, the two builds interleaved on a clean address, six
+# requests each, 12 of 12 served. What decides access is how the exit address
+# is scored. An earlier version of this file claimed otherwise on one sample
+# per arm.
 #
 # `playwright install chrome` installs Google Chrome through the system
 # package manager, so it needs the same privileges any other browser install

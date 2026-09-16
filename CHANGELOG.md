@@ -45,10 +45,19 @@ in the old CLI carries over.
 
 ### Measured, and worth knowing before you run it
 
-- **Real Chrome is required.** Same residential exit, seconds apart: `curl`
-  429, Playwright's bundled Chromium 429, real Chrome **200** with the full
-  grid. Every engine, the Dockerfile and the requirements files now say so;
-  `playwright install chrome`, not `chromium`.
+- **Access is scored per exit address, and it is noisy** — the same address
+  serves some requests and challenges others minutes apart. Real Chrome is
+  the default (`--browser-channel chrome`) because it is the more faithful
+  client, NOT because the build is a gate: measured 2026-09-14, bundled
+  Chromium and real Chrome interleaved on a clean address, six requests each,
+  **12 of 12 served**.
+
+  An earlier draft of this release led with the opposite claim — that the
+  browser binary decided access — on the strength of three single requests
+  (`curl` 429, bundled Chromium 429, real Chrome 200). One sample per arm on
+  a process that serves roughly one request in three does not support it. The
+  claim had been propagated into the README, both engine docstrings, two
+  requirements files, the Dockerfile and the canary; all are corrected.
 - **A dateless search prices every property on a different night**, so its
   prices are not comparable with each other. Pin `startDate`/`endDate`; the
   `stay_dates` column is null when you have.

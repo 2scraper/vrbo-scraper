@@ -13,17 +13,18 @@ Read playwright_scraper.py's docstring for what is different about this site.
 One thing is different about this ENGINE, and it decides whether it works at
 all:
 
-**pyppeteer downloads its own Chromium, and this site refuses that build.**
-Measured on the same residential address seconds apart: a bundled Chromium
-was answered HTTP 429 and a real Chrome HTTP 200 with the full grid. So
-`--chromium-path` is not a convenience here, it is the flag that makes this
-engine usable — point it at an installed Chrome:
+**pyppeteer downloads its own Chromium, and pointing it at an installed
+Chrome is still worth doing** — a real browser is the more faithful client.
+It is NOT the gate an earlier version of this docstring claimed: bundled
+Chromium and real Chrome interleaved on a clean address, six requests each,
+were served 12 of 12. What actually decides access is how the exit address is
+scored, and that is noisy. Use `--chromium-path` anyway:
 
     --chromium-path "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     --chromium-path /usr/bin/google-chrome
 
-Without it the run will almost certainly report exit 3, and it says so at
-startup rather than leaving the reader to discover it from a blocked page.
+Without it the run still works on a clean address; on a scored one nothing
+about the browser will save it.
 
 `--fingerprint` and `--locale` are absent from this engine and present in the
 others; that difference is documented in the README and asserted in the

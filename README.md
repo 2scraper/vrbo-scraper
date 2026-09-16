@@ -17,17 +17,26 @@ Works on Vrbo's five storefronts, which are five different catalogues:
 `stayz.com.au`.
 
 > **Read this first if you only read one thing.**
-> The thing that decides whether Vrbo answers you is **which browser binary
-> you drive**, not which IP you come from. Measured 2026-09-14, same
-> residential address, seconds apart:
+> Whether Vrbo answers you is mostly about **how your exit address is
+> scored**, and it is noisy: the same address serves some requests and
+> challenges others minutes apart. Plan for a challenge you cannot always
+> avoid, rather than for a trick that prevents one.
 >
-> | client | result |
-> |---|---|
-> | `curl` with a Chrome user-agent | **HTTP 429**, "Bot or Not?" |
-> | Playwright's **bundled Chromium**, real window | **HTTP 429**, "Bot or Not?" |
-> | Playwright driving **real Chrome** (`channel="chrome"`) | **HTTP 200**, 899 KB, full grid |
+> Measured 2026-09-14, direct connection, bundled Chromium and real Chrome
+> interleaved, six requests each: **12 of 12 served**. On a clean address the
+> browser build made no difference at all.
 >
-> So: `playwright install chrome`. No proxy substitutes for it.
+> An earlier reading of this said the opposite — that the browser binary was
+> the gate — on the strength of three single requests taken minutes apart
+> (`curl` 429, bundled Chromium 429, real Chrome 200). That is one sample per
+> arm on a process later measured serving roughly one request in three even
+> from an exit it was otherwise challenging, so it did not support the claim.
+> It is corrected here rather than quietly dropped.
+>
+> Real Chrome is still this repo's default (`--browser-channel chrome`) and
+> `playwright install chrome` is still worth doing — it is a more faithful
+> client and costs nothing. Just do not expect it to be the difference
+> between working and not.
 
 ---
 
@@ -37,7 +46,7 @@ Works on Vrbo's five storefronts, which are five different catalogues:
 git clone https://github.com/2scraper/vrbo-scraper && cd vrbo-scraper
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-playwright.txt
-playwright install chrome            # NOT chromium — see the box above
+playwright install chrome            # the default channel; see the box above
 
 python3 playwright_scraper.py \
   --url "https://www.vrbo.com/search?destination=Orlando,%20Florida,%20United%20States%20of%20America" \

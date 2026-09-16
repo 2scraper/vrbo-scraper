@@ -8,17 +8,15 @@ name: canary
 #
 # WHAT THIS CANARY NEEDS, AND WHAT IT DOES NOT
 # --------------------------------------------
-# Unlike the sibling repos in this family, this one needs NO SECRET to do
-# real work. What Vrbo refuses is the browser BUILD, not the address —
-# measured 2026-09-14, same residential exit, seconds apart:
+# Unlike the sibling repos in this family, this one needs NO SECRET to try.
+# The runner installs real Chrome and runs it headful under xvfb, which is
+# the closest a runner gets to an ordinary desktop client.
 #
-#   curl, Chrome user-agent                   429, "Bot or Not?"
-#   Playwright bundled Chromium, real window  429, "Bot or Not?"
-#   Playwright real Chrome, real window       200, 899 KB, 50 cards
-#
-# So the runner installs real Chrome (`playwright install chrome`) and runs
-# it headful under xvfb, which is as close to the measured-working
-# configuration as a runner gets.
+# What decides access here is how the exit ADDRESS is scored, and it is
+# noisy — the same address serves some requests and challenges others
+# minutes apart. (An earlier version of this comment said the browser BUILD
+# was the gate, on one sample per arm; interleaving the two builds on a
+# clean address later gave 12 of 12 served for both.)
 #
 # WHAT IS NOT MEASURED, and is therefore not asserted: whether a GitHub
 # runner's DATACENTRE address gets served at all. It may well not — Vrbo is
@@ -69,10 +67,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install the client and REAL CHROME
-        # `chrome`, not `chromium`. The bundled Chromium is the build this
-        # site was measured refusing, so installing it here would produce a
-        # canary that is red every day for a reason that has nothing to do
-        # with the site.
+        # `chrome`, not `chromium` — the more faithful client, and it
+        # matches the engine's default channel so CI exercises what a user
+        # runs.
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-playwright.txt

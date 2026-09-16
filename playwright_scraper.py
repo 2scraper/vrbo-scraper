@@ -18,12 +18,15 @@ flag could only disagree with the URL it was given.
 
 WHAT IS DIFFERENT ABOUT THIS SITE
 ---------------------------------
-* **It reads the CLIENT before it reads the address.** Measured 2026-09-14,
-  same URL, same residential exit, seconds apart: `curl` with a Chrome UA got
-  HTTP 429, Playwright's BUNDLED Chromium with a real window got HTTP 429,
-  and Playwright driving REAL Chrome (`channel="chrome"`) got HTTP 200 and
-  the full 899 KB grid. So this engine launches real Chrome by default and
-  says so loudly when it cannot — no proxy substitutes for it.
+* **Access is scored per exit address, and it is NOISY.** The same address
+  serves some requests and challenges others minutes apart — measured, an
+  exit that was challenging still served roughly one request in three. Plan
+  for a challenge you cannot always avoid.
+
+  This engine defaults to real Chrome (`--browser-channel chrome`) because it
+  is the more faithful client and costs nothing. It is NOT the gate an
+  earlier version of this docstring claimed: bundled Chromium and real Chrome
+  interleaved on a clean address, six requests each, were served 12 of 12.
 
 * **There is no structured data on a listing page.** 0 `application/ld+json`
   blocks, 0 `__NEXT_DATA__`, and an `__APOLLO_STATE__` holding three keys,

@@ -15,13 +15,14 @@ WORKDIR /app
 
 COPY requirements.txt requirements-playwright.txt ./
 
-# `playwright install chrome`, NOT `playwright install chromium`, and that is
-# the difference between an image that works and one that is refused.
-# Measured on this site from the same address seconds apart: Playwright's
-# bundled Chromium was answered HTTP 429 and Google Chrome HTTP 200 with the
-# full grid. An image built with the bundled browser would be a scraper that
-# cannot fetch its own target — and it would look like a blocked IP rather
-# than a build choice.
+# `playwright install chrome` rather than `chromium`: a real browser is the
+# more faithful client, and it matches this repo's default channel so the
+# image behaves like a local run.
+#
+# It is NOT the difference between an image that works and one that does not
+# — measured 2026-09-14, the two builds interleaved on a clean address, six
+# requests each, 12 of 12 served. What decides access is how the exit address
+# is scored. An earlier version of this comment claimed otherwise.
 #
 # `--with-deps` also pulls Chromium's shared-library dependencies through
 # apt, which are not pip packages and so cannot ride in requirements.txt.
