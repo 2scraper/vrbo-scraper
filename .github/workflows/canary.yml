@@ -78,10 +78,13 @@ jobs:
 
       - name: Scrape a real, known-good search listing
         id: run
-        # --pages 2, not 1: with one page the next-button walk is never
-        # exercised, and that walk is the single most fragile thing in this
-        # repo — the site publishes no rel=next, no canonical and no per-page
-        # address, so if the button moves there is nothing to fall back on.
+        # --pages 3, not 1: with one page the next-button walk is never
+        # exercised at all, and that walk is the single most fragile thing in
+        # this repo — the site publishes no rel=next, no canonical and no
+        # per-page address, so if the button moves there is nothing to fall
+        # back on. Three rather than two because one turn only proves the
+        # button was found once: the family rule is three (CLAUDE.md §11), and
+        # the second turn is where a cursor that does not advance shows up.
         #
         # --delay 15: the data behind a page turn comes over POST /graphql,
         # which is rate limited separately from the HTML. 15s is well above
@@ -105,7 +108,7 @@ jobs:
           set +e
           xvfb-run -a python3 playwright_scraper.py \
             --url "https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=2026-11-14&endDate=2026-11-16&adults=2" \
-            --pages 2 --delay 15 --retries 4 \
+            --pages 3 --delay 15 --retries 4 \
             --out canary_run --dump-html canary_run.html
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
@@ -164,10 +167,14 @@ jobs:
           import json, re, sys
           from pathlib import Path
 
-          PAGES_REQUESTED = 2
+          PAGES_REQUESTED = 3
           PER_PAGE = 50          # what the site's own counter states
-          # Well under two full pages: a short page or a few cards failing to
-          # paint cannot trip it, but a collapse can.
+          # 60 was measured as a floor for a TWO-page run and is deliberately
+          # left where it is rather than scaled to three. Scaling it would be
+          # inventing a number no run has produced; as it stands it is simply
+          # a more conservative floor, and `pages_completed` below is what
+          # actually asserts that all three pages were fetched. Raise it when
+          # a three-page run has been measured, and say which run.
           MIN_ROWS = 60
 
           rows = json.loads(Path("canary_run.json").read_text())
