@@ -8,26 +8,31 @@ the identifier the README already tells people to diff on for price
 monitoring and assortment tracking, but that nothing in this repo actually
 computed.
 
-    python3 diff_runs.py --old watches.2026-09-01.json \\
-                          --new watches.2026-09-07.json
+    python3 diff_runs.py --old orlando.2026-09-01.json \\
+                          --new orlando.2026-09-07.json
 
-Typical use is a scheduled re-run of one of the four scraper engines, kept
+Typical use is a scheduled re-run of one of the scraper engines, kept
 under a dated filename, diffed against the previous one:
 
-    python3 playwright_scraper.py --url "$URL" --out "girls_$(date +%F)"
-    python3 diff_runs.py --old "girls_$(ls -t girls_*.json | sed -n 2p)" \\
-                          --new "girls_$(date +%F).json" --out diff.json
+    python3 playwright_scraper.py --url "$URL" --out "orlando_$(date +%F)"
+    python3 diff_runs.py --old "$(ls -t orlando_*.json | sed -n 2p)" \\
+                          --new "orlando_$(date +%F).json" --out diff.json
 
-Four buckets, each keyed on sku:
+The main buckets, each keyed on sku:
 
   added          — sku present in --new, absent from --old
   removed        — sku present in --old, absent from --new (delisted, or just
-                   off this particular page/category run)
-  changed        — sku present in both, with a different price,
-                   original_price, discount_pct, currency or in_stock
+                   off this particular search run)
+  changed        — sku present in both, with a different value in one of
+                   TRACKED_FIELDS (price, currency, rating, review_count,
+                   property_type, bedrooms, beds, title)
+  stay_changed   — a price move that came with a moved `stay_dates`: the
+                   two runs quoted different nights, so the prices are not
+                   comparable (see the README's first surprise)
   source_changed — sku present in both with a different price, but also a
-                   different price_source: one run got the DOM-corrected
-                   figure and the other the raw JSON-LD one, so the two are
+                   different price_source: one run read the rendered amount
+                   (`card`) and the other the screen-reader sentence
+                   (`card-a11y`), or one was a property page, so the two are
                    not comparable on price. Reported separately because this
                    says something about our own two snapshots, not about the
                    site — and --fail-on-change deliberately ignores it.
@@ -46,13 +51,6 @@ from typing import Dict, List, Optional, Tuple
 
 from output_writer import UNIQUE_BY_SKU_MODES
 
-# `sold` is tracked alongside the price, and `sold_is_floor` with it, because
-# without the flag a `sold` change is unreadable: a tile's figure is a floor
-# the site rounded down ("100rb+ terjual" = 100_000) while a product page's
-# is exact (207785 for that same product). A monitor watching `sold` alone
-# would report a jump of 107,785 the moment someone diffed a listing run
-# against a product run, and none of it would be a sale.
-#
 # No `original_price` / `discount_pct` here, because this site has neither:
 # 0 strike nodes across 218 cards, 6 captures and 4 storefronts, so the
 # columns do not exist on `Product` either (see output_writer's docstring).
@@ -212,8 +210,8 @@ def diff_products(old: List[dict], new: List[dict],
         # `lifecycle` key is still emitted, always empty, so a consumer
         # written against the family's diff shape does not have to branch.
         # An FX tick rather than a price change — see _within_tolerance. Only
-        # when the ONLY differences are price fields: a currency or stock
-        # change alongside is a real change whatever the size of the move.
+        # when the ONLY differences are price fields: a currency or
+        # rating change alongside is a real change whatever the size of the move.
         if (all(f in PRICE_FIELDS for f in field_changes)
                 and _within_tolerance(before, after, field_changes,
                                       price_tolerance_pct)):

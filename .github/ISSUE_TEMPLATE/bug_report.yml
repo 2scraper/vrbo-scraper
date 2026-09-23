@@ -12,31 +12,28 @@ body:
 
         A few things answer most reports faster than we can:
 
-        - **Everything exit 3?** Check whether the run was **headless** before
-          you check anything else. Akamai refuses a headless browser on this
-          site whatever the exit address — measured HTTP 403 from four
-          residential exits and one datacentre address, against HTTP 200 and
-          the full catalogue from those very same addresses with a real
-          window. `--headful` is the default here; a proxy does not fix it,
-          and `--cdp-endpoint` is the other path measured to work.
-        - **`price` null on some rows?** That is almost certainly correct:
-          every blank price is a lot whose reserve has not been met, and the
-          row carries `reserve_price_set: true` to say so. What is NOT
-          correct is a null price with no reserve flag — that one is worth
-          this issue.
-        - **Zero rows?** You may be on a page that has none: one page past the
-          end of a listing, or a search that matched nothing (that one answers
-          200 with "No results" **and 24 suggested lots**, which this scraper
-          deliberately does not parse). Both are exit 4 and correct answers.
-          See [TROUBLESHOOTING.md](../blob/main/TROUBLESHOOTING.md).
-        - **`rating` and `review_count` empty on every row?** Expected: this
-          site publishes no per-lot rating. The seller's feedback is in
-          `seller_score` and `seller_feedback_count` on a `--mode lot` row.
-        - **The run stopped at page 100?** That is the site's own cap, not a
-          bug. Past it the site returns page 100's own lots under HTTP 200.
-        - **Wrong language?** The locale is a path segment (`/en/`, `/nl/`,
-          `/de/`), not something the exit IP decides. Prices are in euro on
-          all 18 locales.
+        - **Everything exit 3?** That is Expedia's "Bot or Not?" handler
+          (HTTP 429) refusing your exit address, and the scoring is noisy:
+          the same address serves some requests and challenges others
+          minutes apart. Slow down (`--delay 10`), move to another exit
+          (`--proxy` / `--proxy-file`), or wait. The log names the vendor
+          the handler picked, e.g. `blocked (datadome-challenge)`; only a
+          reCAPTCHA pick is ever offered to the solver.
+        - **Exit 6 after page 1?** Look at `stop_reason` in the sidecar.
+          `next_page_throttled` means the page turn (`POST /graphql`) was
+          rate limited while the HTML kept answering 200; `cards_missing`
+          means a page delivered fewer cards than its own counter states.
+        - **Every price changed overnight?** Check `stay_dates`. A search
+          with no dates in the URL prices each property on its own cheapest
+          night; pin `startDate`/`endDate` for comparable prices.
+        - **`image_url` or `amenities` empty on most rows?** Expected: the
+          gallery is not mounted below the fold, and the amenity strip is an
+          A/B variant of the card.
+        - **Zero rows?** See
+          [TROUBLESHOOTING.md](../blob/main/TROUBLESHOOTING.md) first.
+        - **Wrong currency or language?** The storefront is the hostname
+          (`vrbo.com`, `fewo-direkt.de`, `abritel.fr`, `bookabach.co.nz`,
+          `stayz.com.au`), not something the exit IP decides.
 
   - type: dropdown
     id: engine
@@ -84,8 +81,8 @@ body:
       render: shell
       placeholder: |
         python3 playwright_scraper.py \
-          --url "https://www.vrbo.com/en/c/333-watches" \
-          --pages 3 --out grills
+          --url "https://www.vrbo.com/search?destination=Orlando,%20Florida,%20United%20States%20of%20America" \
+          --pages 2 --out orlando
     validations:
       required: true
 
@@ -105,7 +102,7 @@ body:
     attributes:
       label: What you expected instead
       placeholder: >-
-        96 products, as the README says a category page yields.
+        50 properties per page, as the README says a search page holds.
     validations:
       required: true
 
