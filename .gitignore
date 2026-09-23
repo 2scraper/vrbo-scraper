@@ -16,8 +16,8 @@
 # every CI job died with FileNotFoundError while the whole suite was green
 # locally. Exactly the class of thing only a clean checkout finds.
 !fixtures_generated.json
-catawiki_products.*
-catawiki_products_*.*
+vrbo_products.*
+vrbo_products_*.*
 
 # --- the live-test harness's working directory ---------------------------
 live_results/

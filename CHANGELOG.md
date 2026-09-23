@@ -22,7 +22,36 @@ that is a fix, and the release notes lead with it.
   the note in the workflow says to raise it only when a three-page run has
   been measured, naming that run.
 
-## [Unreleased]
+### Docs — leftovers from the repos this one was copied from
+
+Text describing another site as if it were Vrbo, removed or rewritten from
+this repo's own README, TROUBLESHOOTING and parser:
+
+- **`captcha_solver.py`** said no challenge had ever been observed here and
+  that a block was a headless browser refused by Akamai with a 394-byte
+  "Access Denied". Both were another site's. It now says what the README
+  measured: Expedia's "Bot or Not?" handler (HTTP 429) picked DataDome on
+  every recorded refusal, and there is deliberately no DataDome path. The
+  "No DataDome solver" section the docstring pointed at now exists.
+- **`CONTRIBUTING.md`**: the site-change anchors (a different site's
+  `data-testid` grid and tile markers), the list of pinned properties
+  (auction lots, reserve prices, bid counts, a 100-page cap) and the
+  `akamai` marker note (which contradicted this repo's own measurement)
+  are rewritten for Vrbo. Also corrected: the canary note that the browser
+  build is the gate, and a "datacentre gets no response at all" claim.
+- **Issue templates**: the bug-report hints and the site-change template
+  described another site's payload, lots and locales; both now describe
+  Vrbo's cards, storefronts and `stop_reason`s. Example commands use a Vrbo
+  search URL.
+- **`diff_runs.py`**: example filenames, a `sold`/`sold_is_floor` note for a
+  column this repo does not have, and a docstring listing
+  `original_price`/`discount_pct`/`in_stock` and JSON-LD provenance. The
+  docstring now lists the tracked fields and the `stay_changed` bucket.
+- **`.gitignore`** ignored another repo's default output prefix; it now
+  ignores `vrbo_products.*`, the engines' real `--out` default.
+- **`SECURITY.md`** named only Akamai as the protection, said the project
+  has no releases (v0.1.0 exists) and pointed at a README section that does
+  not exist.
 
 ## [0.1.0] — 2026-09-14
 

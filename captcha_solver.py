@@ -9,12 +9,14 @@ sign-in, checkout, anything) — this is deliberate, not scoped to any one
 page. If Vrbo renders a reCAPTCHA challenge anywhere — account, sign-in
 and checkout flows are the usual places — this fires.
 
-**NO challenge of any kind has been observed on this site.** Measured
-2026-09-10 across six live captures: the pages this scraper reads carry
-none, and an address the site has scored gets no response at all rather than
-an interstitial. So this module is a contingency, not part of the happy path
-— a bot manager can be switched on between deploys, and a scraper that
-cannot name what stopped it is much harder to fix.
+**The challenge this site actually serves is not one this module solves.**
+Vrbo's refusal is Expedia's own "Bot or Not?" handler (HTTP 429), which
+picks its vendor per request and names the pick in its page config
+(`whichChallenge`). Every measured refusal in the README picked DataDome.
+product_parser offers a challenge to this module only when that pick is
+reCAPTCHA, so on this site the module is a contingency rather than part of
+the happy path — and a scraper that cannot name what stopped it is much
+harder to fix.
 
 Detection therefore stays BROAD (which challenge a visitor meets depends on
 the exit and on what the address has been doing) while spending stays
@@ -703,23 +705,24 @@ solve_recaptcha_v3 = solve_recaptcha
 
 
 # ===========================================================================
-# What is deliberately NOT here
+# What is deliberately NOT here — No DataDome solver
 # ===========================================================================
 # The sibling repo in this family carries a whole second solver for its
 # site's OWN first-party image captcha ("Enter the characters you see below",
 # a JPEG of distorted text and a GET form). Roughly 190 lines of it, and none
 # of it is ported here, because this site has no such page.
 #
-# What this site does instead is refuse a HEADLESS browser. Measured
-# 2026-09-10 from five different addresses, four of them residential: Akamai
-# answers with HTTP 403 and a 394-byte "Access Denied" page carrying a
-# reference id — no form, no image, no widget, nothing for a solver to
-# answer. And the trigger is the CLIENT rather than the address: the very
-# same addresses were served HTTP 200 and the full catalogue by a browser
-# with a real window. So the response to a block here is `--headful` or
-# `--cdp-endpoint`, not a solve and not a better proxy, and
-# product_parser.detect_page_state reports it as "blocked" rather than
-# "challenge" precisely so no solve is attempted and nothing is charged.
+# Nor is there a DataDome path, although DataDome is what Expedia's
+# "Bot or Not?" handler picked on every measured refusal here. The README
+# records why: `DataDomeSliderTask` solved the slider in testing, but
+# applying the returned cookie did not reliably get a request in, and a
+# control run with no solve at all was served just as often. A DataDome
+# solve also needs a sticky proxy session this tool does not manage, and
+# the recommended path (a real local Chrome on a residential exit) never
+# met a challenge. So product_parser reports any non-reCAPTCHA pick as
+# "blocked" rather than "challenge", and no solve is attempted and nothing
+# is charged. This is "this repo does not implement it", not "it cannot be
+# solved".
 #
 # The reCAPTCHA / hCaptcha / Turnstile machinery above IS kept, and that is a
 # deliberate asymmetry rather than an inconsistency. Detection stays broad
@@ -727,6 +730,6 @@ solve_recaptcha_v3 = solve_recaptcha
 # what the address has been doing — a narrow list is how a challenge gets
 # reported as an empty page months later. A solver for a challenge this site
 # has never been observed to serve is dead code; a DETECTOR for one is cheap
-# insurance: a detection that fires on a page whose lots have
-# already rendered guards nothing, which is why the default is
-# `when-blocked` and why it counts lot links before it spends.
+# insurance: a detection that fires on a page whose properties
+# have already rendered guards nothing, which is why the default is
+# `when-blocked` and why it counts property links before it spends.
