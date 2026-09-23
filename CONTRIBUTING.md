@@ -43,37 +43,30 @@ not the check caught it.
 Vrbo changing its markup is the normal way this stops working, and it
 has its own issue template. The detail that saves the most time is WHICH
 anchor broke, because on this site there is no structured data on a listing
-page to fall back on — measured zero `application/ld+json`, zero
-`__NEXT_DATA__` and zero Apollo state across six captures — so the DOM is
-not the primary path by preference, it is the only one.
+page to fall back on — zero `application/ld+json`, zero `__NEXT_DATA__`, and
+an `__APOLLO_STATE__` holding only a banner, because the grid arrives over
+client-side POSTs to `/graphql` — so the DOM is not the primary path by
+preference, it is the only one. Every anchor is one of Vrbo's own
+`data-stid` attributes, never a `uitk-…` design-system class.
 
-1. **The grid container.** `[data-testid="divSRPContentProducts"]` on a
-   search page, `[data-ssr="productsCategoryL2/L3SSR"]` on a category
-   listing. If one of these moves the run reports 0 rows and exit 4, which
-   is loud.
-2. **The tile marker.** `[data-testid="imgLeg-c"]` on a search page (one per
-   tile), `[data-testid="divProductWrapper"]` inside
-   `a[data-testid="lnkProductContainer"]` on a category listing.
-3. **The reading ORDER inside the tile** — badge, title, price, was-price,
-   rating, sold, shop, location. The field reads rest on it, deliberately,
-   because the classes around each field are build hashes:
-   `<h3 class="uitk-heading uitk-heading-5 ...">` is the title today. If Vrbo
-   reorders a tile, `title` and the prices are what break.
-4. **`span.flip`**, the shop name and the shop's city in that order, exactly
-   two per search tile.
+1. **The card.** `[data-stid="lodging-card-responsive"]`, and the property
+   link inside it, `a[data-stid="open-product-information"]`. If either
+   moves the run reports 0 rows and exit 4, which is loud.
+2. **The price container, which has two spellings.**
+   `data-stid="product-price-summary"` on vrbo.com and
+   `data-test-id="price-summary"` on the local storefronts. A third
+   spelling shows up as a null price column on ONE storefront while every
+   other column looks fine — so say which host you ran.
+3. **The scroll container.** `.scrollable-result-section`. The page body
+   never scrolls; if this moves, first paint (3 to 18 cards) is all you get
+   and the sidecar reports `cards_missing`.
+4. **Pagination.** `[data-stid="next-button"]` and the counter in
+   `[data-stid="pagination-navigation"]` (`1 - 50 of 300+`). The counter is
+   what the completeness arithmetic reads.
 
-The one place structured data does exist is a DETAIL page's
-`window.__cache` Apollo blob, which is where `--mode product` reads the real
-product id, the exact sold count and the review count.
-
-A third thing can break without any path failing: the **join** between the
-tiles and the structured data. When it breaks, the row count and the prices
-stay healthy while `in_stock` and part of `brand` quietly empty out — so
-every run logs its structured-price confirmation share per page and warns
-below a floor set PER PAGE KIND (search 8%, category 70%, shop 80%; the
-achievable share differs by a factor of eight between them). If you are
-reporting a change, that percentage and the page kind are the numbers to
-include.
+A property page (`--mode property`) carries two JSON-LD blocks, a
+`BreadcrumbList` (read for `category`) and an `FAQPage`; its price, address
+and reviews still come from the DOM.
 
 `--dump-html PATH` writes the exact bytes the parser was given, on success as
 well as failure, and a run that finds nothing writes a dump and a screenshot
@@ -100,10 +93,10 @@ Then the rest of the presentation, in the order that matters:
 1. `python3 smoke_test.py` green, and the canary dispatched at least once —
    including its WARNING branch, which is what runs when a bare GitHub
    runner's datacentre address is refused and no `VRBO_PROXY` secret is set.
-   Unlike the sibling repos in this family, this canary needs no secret to do
-   real work: what Vrbo refuses is the browser BUILD rather than the address,
-   and a runner can install real Chrome. Whether it also gets past the
-   ADDRESS check has not been measured, which is exactly why a block there is
+   Unlike most sibling repos in this family, this canary needs no secret to
+   try: it installs real Chrome and runs it headful. What decides access
+   here is how the exit ADDRESS is scored, and whether a runner's datacentre
+   address is served has not been measured, which is exactly why a block there is
    a warning rather than a failure — until you set `VRBO_PROXY`, after which
    it is a failure, because then it means something.
 2. The repo description, homepage and topics set (see the family notes on
@@ -119,58 +112,33 @@ Then the rest of the presentation, in the order that matters:
 file of plain functions with inline HTML/JSON fixtures — no pytest, no
 conftest, no fixtures directory. Copy the nearest existing check and edit it.
 
-Five properties in this repo exist because they were once absent and cost real
-time. Tests pin all five, so a PR that breaks one will fail rather than
+The properties below exist because they were once absent or are easy to get
+wrong. Tests pin them, so a PR that breaks one will fail rather than
 silently regress:
 
-- **`price` means three different things, and `bid_kind` says which.**
-  `current` is a live high bid, `final` is the last bid on a closed lot — a
-  hammer price only when `sold` is also true — and `starting` is a floor
-  nobody has bid. One captured lot reached €1,300 with its reserve unmet and
-  sold for nothing at all. The kind is resolved through the page's OWN
-  translation store (`lot_status_current_bid` and friends), not through a
-  table of 18 languages: two keys read "Current bid" in English and they are
-  different strings in Chinese, so a table built from the English page would
-  have matched nothing there.
-- **A null price is a reserve lot, not a failure.** 57 of 57 blank prices
-  across 13 captures carried `reserve_price_set: true`, spread through the
-  page rather than clustered at its end. So there is no price-coverage
-  threshold worth setting, and the check that matters is the INVARIANT: a
-  null price always carries the reserve flag. The canary asserts exactly
-  that.
-- **The empty-price placeholder is a ZERO-WIDTH SPACE.**
-  `.c-lot-card__price` is present on 24 of 24 cards while 2–3 hold nothing,
-  so a truthiness check on the node reports 100% coverage and writes an
-  invisible character into every row. Anything read out of a card goes
-  through the zero-width strip first.
-- **`favorite_count` comes from the rendered card, never from the payload.**
-  The payload's own `favoriteCount` reads 0 on 288 of 288 lots across 12
-  captures while the card shows the real figure on all 24 of each — present,
-  authoritative-looking and uniformly wrong.
-- **`bid_count` is a floor.** The site returns the last ten bids and states
-  no total; two lots with very different activity both reported exactly ten.
-  `bid_count_is_floor` is what says which kind of number it is.
-- **A lot page's DOM is not read.** It renders 20–40 OTHER lots in a
-  "similar lots" carousel using the same class a listing uses for its own
-  price, so "the first euro amount on the page" is a neighbour's number.
-  Every lot-mode column comes from the payload.
-- **Pagination is capped at 100 pages by the site**, and a request past the
-  cap returns page 100's own lots under HTTP 200 rather than failing. The cap
-  is enforced on the URL this repo builds AND on any link the site offers,
-  because without the second half a run reports COMPLETE holding 2,400 of
-  11,681 lots.
-- **A search that matches nothing returns 24 suggested lots** reported as
-  `total: 24`. That state is read off the payload's own
-  `extended_search_result` flag and is NOT parsed: two dozen plausible rows
-  for a query that matched nothing is worse than none.
-- **A block here is a HEADLESS browser, not a bad address.** HTTP 403 and a
-  394-byte "Access Denied" from four residential exits and one datacentre
-  one, against HTTP 200 and the full catalogue from the same addresses with a
-  real window. So `--headful` is the default, `RETRY_ON_BLOCKED` is False,
-  and the block message says so rather than sending someone to buy a proxy.
-  Block detection is INVERTED as well: a served page is recognised by the
-  site's own asset host, because Chromium's own network-error page carries
-  the site's hostname in its title and would pass any title check.
+- **A dateless search prices every property on a different night.**
+  `stay_dates` carries the window verbatim, and `diff_runs.py` buckets a
+  price move that comes with a moved window as `stay_changed`, not
+  `changed`. With `startDate`/`endDate` in the URL it is null on every row.
+- **Completeness is arithmetic.** The pagination counter states which items
+  a page holds, so fewer rows than that is `cards_missing` and downgrades
+  the run to `partial` — never a threshold.
+- **A throttled page turn is `partial`, never "the listing ended".** The
+  HTML keeps answering 200 while the `/graphql` POST behind the next button
+  answers 429, and `stop_reason` says `next_page_throttled`.
+- **There is no per-page address.** `&page=2` and `&startIndex=50` answer
+  200 with page 1, so `--concurrency` above 1 is refused with that reason.
+- **Two different ids.** `sku` is the property id from the URL path;
+  `expedia_property_id` is Expedia's own, a DIFFERENT number on a `/{id}`
+  card. Do not merge them.
+- **`rating` is out of ten**, which is why `rating_scale` is its own column.
+- **The refusal names its vendor as data.** Expedia's "Bot or Not?" handler
+  (HTTP 429) states `whichChallenge`; only a reCAPTCHA pick is offered to
+  the solver, and every other pick is reported as blocked with nothing
+  charged. Block detection is also positive: a served page is recognised by
+  the site's own asset hosts (`travel-assets.com`, `media.vrbo.com`),
+  because Chromium's network-error page carries the site's hostname in its
+  title.
 - **A run that finds nothing writes nothing.** It must not replace a good output
   file with `[]`. `--allow-empty` is the opt-out.
 - **Exit codes are a contract**, not decoration: `0` ok, `1` crash, `2` bad
@@ -183,21 +151,13 @@ silently regress:
   disagree about it.
 - **A challenge marker is only consulted for a state already counted as
   blocked**, and a marker that matches every page of the site is not a
-  marker at all. This has bitten twice in this family, and the second time
-  is why `akamai` is NOT in this repo's marker set: the string lives in the
-  response header (`server: AkamaiGHost`), not in the body of a good page or
-  a bad one — 0 occurrences in every capture. There is deliberately no
-  extension-stripping guard either: the Scraping Browser's auto-solve
-  extension does inject a recaptcha and a turnstile hunter into every page it
-  loads, but none of this repo's markers matches them even without
-  stripping, so the guard would be code that looks load-bearing and never
-  runs. Broaden the set and add the guard together.
+  marker at all. That is why `akamai` is NOT in this repo's marker set: Vrbo
+  is fronted by Akamai Bot Manager and every good page loads its sensor
+  script, so the string matches an 899 KB page holding the full grid. What
+  identifies a refusal here is the handler itself (`Bot or Not?`,
+  `captcha-pwa`, `wildcard-challenge-handler`).
 - **A sku already written by an earlier page of the same run is dropped, not
-  duplicated.** Unlike its sibling repos this DOES fire on healthy runs
-  here: page 1 and page 2 of one category listing shared exactly 3 products,
-  all three from the "cheaper products" carousel that appears on every page.
-  So a small non-zero drop count is expected and a large one is not. See
-  `dedupe_by_key` in `output_writer.py`.
+  duplicated.** See `dedupe_by_key` in `output_writer.py`.
 
 There is also a naming check: certain phrases are banned repo-wide and the suite
 fails naming them. If it trips, read the message — the phrase is wrong for a
@@ -224,25 +184,24 @@ Most do not — the suite covers the parser, the writers, the captcha classifier
 and the CLI contract against inline fixtures. If yours genuinely needs
 vrbo.com, say in the PR what you ran, which URL and page kind, from
 which exit, and what you got — including the price and image coverage
-percentages the run prints, and the scroll trace from the sidecar. Note that
-a run from a datacentre address gets NO RESPONSE AT ALL, so "it returned
-nothing" from a VPS is not a finding. Product counts differ by category, by
-URL and by how far the scroll got, so a bare "worked for me" is not
-reproducible.
+percentages the run prints, `cards_missing`, and the `stop_reason` from the
+sidecar. Access here depends on how the exit address is scored and is
+noisy, so a single exit 3 is not a finding on its own. Row counts differ by
+search, by storefront and by how far the scroll got, so a bare "worked for
+me" is not reproducible.
 
 **Run more than the primary engine.** "Mirror them exactly" is a design rule,
-not a verification: the first live run of the pyppeteer engine crashed on its
-FIRST fetch on a signature mismatch that four separate offline checks and 400
-green assertions had not caught.
+not a verification: in a sibling repo (tokopedia-scraper) the first live run
+of the pyppeteer engine crashed on its FIRST fetch on a signature mismatch
+that four separate offline checks and 400 green assertions had not caught.
 
-Do not add anything that submits the registration form. This project
-deliberately never does, and a captcha token proved valid by creating a real
-account is not a result worth having.
+Do not add anything that submits a booking, enquiry or sign-in form. This
+project deliberately never does.
 
 ## Scope
 
-This repo scrapes **public pages** on Vrbo: category listings, search
-listings and product pages, exactly as an anonymous visitor is served them.
+This repo scrapes **public pages** on Vrbo and its sibling storefronts:
+search listings and property pages, exactly as an anonymous visitor is served them.
 Out of scope: anything behind a login, anything that submits a form, and
 anything that defeats a protection rather than passing it the way an ordinary
 browser does.
