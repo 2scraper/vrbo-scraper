@@ -55,7 +55,8 @@ Not because these do not matter, but because they belong somewhere else:
 
 - **Bypassing Vrbo's bot protection.** This scraper drives an ordinary
   browser and passes challenges the way a browser does. Anything about how
-  Akamai or reCAPTCHA behave is not a vulnerability in this repository.
+  Akamai, Expedia's "Bot or Not?" handler, DataDome or reCAPTCHA behave is
+  not a vulnerability in this repository.
 - **The scraper stopped working.** Vrbo changing its markup is expected —
   file it as a normal issue, there is a template for exactly that.
 - **Anything about 2Captcha's services** — the solver API, the Scraping Browser
@@ -71,7 +72,7 @@ Not because these do not matter, but because they belong somewhere else:
   Several of our optional dependencies carry advisories for code paths this
   project never calls; a report needs to show the path.
 - **Rate limits, terms of service, or the legality of scraping** in your
-  jurisdiction. See the Legal section of the README — those are your
+  jurisdiction. See the "Licence and scope" section of the README — those are your
   responsibility as the operator, not defects.
 - **Reports generated entirely by an automated tool** with no analysis of
   whether the finding applies. We read every report, and unexamined scanner
@@ -79,8 +80,8 @@ Not because these do not matter, but because they belong somewhere else:
 
 ## Supported versions
 
-`main` only. This project has no releases or version tags; fixes land on `main`
-and you update by pulling. If you are running an old clone, update before
+The latest release and `main`. Fixes land on `main` first; update by
+pulling. If you are running an old clone, update before
 reporting.
 
 ## If you have leaked a key

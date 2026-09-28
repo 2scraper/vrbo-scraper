@@ -9,36 +9,28 @@ body:
         its own report because the fix is different from a code bug:
         something on vrbo.com moved.
 
-        Useful to know before filing, because it narrows the fix a lot — this
-        parser reads **two different sources for two halves of a row**:
-
-        - **The rows** come from the site's own SSR payload,
-          `<script id="__NEXT_DATA__">`, which is in the first response and
-          needs no JavaScript. Titles, ids, urls, images, auction ids and the
-          reserve flag all come from there.
-        - **The money** comes from the rendered card
-          (`.c-lot-card__price` and its siblings), because the payload does
-          not carry it: bids arrive at hydration.
-
-        So "no rows at all" and "rows with no prices" are two different
-        breakages with two different fixes, and `price_source` on the rows
-        tells you which happened: `next_data+dom` is healthy, `next_data`
-        means nothing hydrated.
+        Useful to know before filing, because it narrows the fix a lot:
+        there is **no structured data on a listing page**, so every column
+        comes from the rendered card, anchored on Vrbo's own `data-stid`
+        attributes. The card is `[data-stid="lodging-card-responsive"]`,
+        and the price container has two spellings —
+        `data-stid="product-price-summary"` on vrbo.com and
+        `data-test-id="price-summary"` on the local storefronts — so say
+        which host you ran. `price_source` on the rows says which node was
+        read: `card` / `card-a11y` on a listing, `detail` / `detail-a11y`
+        on a property page.
 
   - type: dropdown
     id: what_broke
     attributes:
       label: What stopped matching
       options:
-        - No rows at all on a page that visibly has lots (the payload moved)
-        - Rows come out with no prices (the card, or its price class, moved)
-        - bid_kind is null on rows that have a price (the status label moved)
-        - A null price with no reserve_price_set flag (the invariant broke)
-        - favorite_count empty on every row (the card's counter moved)
-        - Pagination stops early, repeats a page, or runs past the 100 cap
-        - A lot page returns nothing (--mode lot)
-        - The auctions index returns nothing (--mode auctions)
-        - A no-results search returns 24 suggested lots as if they were real
+        - No rows at all on a page that visibly has properties (the card moved)
+        - Rows come out with no prices (the price container moved)
+        - Prices missing on one storefront only (a new spelling of the container)
+        - Fewer rows than the page's own counter says (cards_missing)
+        - Pagination stops early or repeats a page (the next button moved)
+        - A property page returns nothing (--mode property)
         - Something else
     validations:
       required: true
@@ -48,10 +40,9 @@ body:
     attributes:
       label: URL
       description: >-
-        The exact URL, its locale prefix, and how the browser was reached.
-        Please say whether the run was headful or over --cdp-endpoint: a
-        headless run is refused by the site and is not a parser problem.
-      placeholder: "https://www.vrbo.com/en/c/333-watches (locale: /en/, headful local Chrome, exit: NL residential)"
+        The exact URL, which storefront, how the browser was reached
+        (local headful, headless, or --cdp-endpoint) and from which exit.
+      placeholder: "https://www.vrbo.com/search?destination=... (storefront: vrbo.com, headful local Chrome, exit: BE residential)"
     validations:
       required: true
 
@@ -63,12 +54,11 @@ body:
         Whichever of these you can get. A capture beats a description, and
         `--dump-html` writes one on success as well as on failure.
 
-        - The payload as the page actually serves it:
-          `python3 -c "import json,re;h=open('dump.html').read();d=json.loads(re.search(r'id=.__NEXT_DATA__.[^>]*>(.*?)</script>',h,1).group(1));print(sorted(d['props']['pageProps']))"`
-        - For a price problem: one whole `article.c-lot-card__container` from
-          devtools, and the amount the page shows for that lot.
-        - For a `bid_kind` problem: the exact label the card prints
-          ("Current bid", "Aktuelles Gebot", ...) and the locale.
+        - For a price problem: one whole
+          `[data-stid="lodging-card-responsive"]` card from devtools, and
+          the amount the page shows for that property.
+        - For a missing-rows problem: the counter text
+          (`1 - 50 of 300+`) and `cards_missing` from the sidecar.
       render: text
     validations:
       required: true
@@ -78,5 +68,5 @@ body:
     attributes:
       label: Anything else
       description: >-
-        Whether it reproduces on a second engine, whether it reproduces in a
-        second locale, and when it last worked.
+        Whether it reproduces on a second engine, whether it reproduces on a
+        second storefront, and when it last worked.
