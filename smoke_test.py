@@ -515,6 +515,32 @@ def test_challenge_is_not_always_solvable():
     return ok
 
 
+def test_block_backoff_and_schema_version():
+    group("--block-retry-delay backs off; the sidecar carries schema_version")
+    ok = True
+    bp = page_flow.block_pause
+    ok &= check("unset keeps the historical linear wait (2, 4)",
+                [bp(2.0, n) for n in (0, 1)] == [2.0, 4.0])
+    ok &= check("set, it starts at the base and doubles (30, 60, 120)",
+                [bp(2.0, n, 30.0) for n in (0, 1, 2)] == [30.0, 60.0, 120.0])
+    for eng in ("playwright_scraper", "puppeteer_scraper", "selenium_scraper"):
+        src = open(eng + ".py", encoding="utf-8").read()
+        ok &= check(f"{eng} takes --block-retry-delay and routes it through block_pause",
+                    '"--block-retry-delay"' in src
+                    and "page_flow.block_pause(args.retry_delay, block_attempt," in src)
+    import output_writer
+    meta = output_writer.run_meta("complete", "completed", 1, 1, "u", "u", 1)
+    ok &= check("run_meta records schema_version",
+                meta.get("schema_version") == output_writer.SCHEMA_VERSION)
+    ok &= check("a caller's extra cannot overwrite it",
+                output_writer.run_meta("complete", "completed", 1, 1, "u", "u", 1,
+                    extra={"schema_version": "9"})["schema_version"]
+                == output_writer.SCHEMA_VERSION)
+    ok &= check("it is a MAJOR.MINOR.PATCH string",
+                re.fullmatch(r"\d+\.\d+\.\d+", output_writer.SCHEMA_VERSION) is not None)
+    return ok
+
+
 def test_retries_zero_is_refused():
     group("--retries 0 would never navigate, so the parser refuses it")
     ok = True
@@ -1097,10 +1123,12 @@ def test_engine_parity(skips):
         # timeout there would be a flag for a path that does not exist.
         "playwright_scraper": {"--locale", "--fingerprint", "--fp-tags",
                                "--fp-country", "--browser-channel",
-                               "--cdp-connect-timeout"},
+                               "--cdp-connect-timeout",
+                               "--block-retry-delay"},
         "selenium_scraper": {"--locale", "--fingerprint", "--fp-tags",
-                             "--fp-country"},
-        "puppeteer_scraper": {"--chromium-path", "--cdp-connect-timeout"},
+                             "--fp-country", "--block-retry-delay"},
+        "puppeteer_scraper": {"--chromium-path", "--cdp-connect-timeout",
+                              "--block-retry-delay"},
     }
     for engine, extra in documented_extra.items():
         actual = flagsets[engine] - contract
@@ -1581,6 +1609,7 @@ def main() -> int:
     ok &= test_pagination()
     ok &= test_page_state()
     ok &= test_challenge_is_not_always_solvable()
+    ok &= test_block_backoff_and_schema_version()
     ok &= test_retries_zero_is_refused()
     ok &= test_page_flow_policy()
     ok &= test_scroll_loop()

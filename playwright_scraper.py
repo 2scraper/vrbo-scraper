@@ -839,7 +839,8 @@ def _fetch_one_page(session, args, pool, page_num: int, url: Optional[str]) -> P
             break
 
         if block_attempt < block_retries:
-            pause = args.retry_delay * (block_attempt + 1)
+            pause = page_flow.block_pause(args.retry_delay, block_attempt,
+                                          args.block_retry_delay)
             if has_pool:
                 logger.warning("Page %d came back as %s from %s — retrying "
                                "from another exit in %.1fs (%d/%d).",
@@ -1273,6 +1274,16 @@ def parse_args():
     p.add_argument("--retry-delay", type=float, default=2.0,
                    help="Seconds before the first page-load retry, doubling "
                         "thereafter (default 2.0)")
+    p.add_argument("--block-retry-delay", type=float, default=None,
+                   metavar="SECONDS",
+                   help="Wait before re-fetching a page that came back "
+                        "REFUSED (HTTP 429 / challenge), doubling on each "
+                        "retry: 30 waits 30 s then 60 s. Default: unset, "
+                        "which keeps the short linear wait of --retry-delay "
+                        "x attempt. The 429 here is a rate response that was "
+                        "measured clearing minutes later, so a longer wait "
+                        "is the lever that fits it. The number of retries "
+                        "stays the built-in budget (2 without a proxy pool).")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="vrbo_products", help="Output file prefix")
     p.add_argument("--locale", default="en-US",

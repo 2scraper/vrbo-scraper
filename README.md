@@ -55,6 +55,13 @@ python3 playwright_scraper.py \
 
 That writes `orlando.json`, `orlando.csv` and `orlando.meta.json`.
 
+`orlando.meta.json` carries `schema_version` (`output_writer.SCHEMA_VERSION`,
+MAJOR.MINOR.PATCH): MAJOR when a column is removed, renamed or changes
+meaning, MINOR when one is added at the end, PATCH for a clarification.
+It is the output contract's version, not the package's. `diff_runs.py`
+refuses to compare two runs whose MAJORs differ; sidecars written before it
+existed carry none and are not refused.
+
 **Install exactly one engine.** The three engines' pins are mutually
 unsatisfiable (`playwright` and `pyppeteer` disagree on `pyee`; `pyppeteer`
 and `selenium` on `urllib3`). Use a virtualenv per engine if you need more
@@ -237,6 +244,10 @@ expedia_property_id, price_note, sku, url, source. The only differences were
 Engine flag differences are asserted in both directions by the test suite, so
 closing one needs a README edit rather than a quiet patch:
 
+* `--block-retry-delay SECONDS` — all three engines, but not part of the
+  family flag contract. Wait before re-fetching a page that came back
+  refused, doubling per retry (30 waits 30 s, then 60 s). Unset keeps the
+  short linear wait. The retry COUNT is unchanged (2 without a pool).
 * `--browser-channel` — Playwright only
 * `--chromium-path` — pyppeteer only
 * `--cdp-connect-timeout` — Playwright and pyppeteer only (Selenium cannot
