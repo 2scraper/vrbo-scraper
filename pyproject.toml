@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vrbo-scraper"
-version = "0.1.0"
+version = "0.2.0"
 description = "Vrbo property scraper: search grids and property pages, across all five Vrbo storefronts."
 readme = "README.md"
 license = "MIT"

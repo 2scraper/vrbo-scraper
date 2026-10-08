@@ -10,6 +10,13 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-08
+
+> **Behaviour change:** `--retries 0` is now refused with a usage error
+> (exit 2). It used to send no request at all and report exit 3 (blocked),
+> so a script passing it was reading a refusal the site never gave. Use
+> `--retries 1` for "no retry".
+
 ### Added
 
 - **`--block-retry-delay SECONDS`** (all three engines). Wait before
@@ -46,8 +53,6 @@ that is a fix, and the release notes lead with it.
   number no run has produced. It is simply a more conservative floor now, and
   the note in the workflow says to raise it only when a three-page run has
   been measured, naming that run.
-
-### Fixed
 
 - **Scraper API: `waitFor` is now sent as a JSON object.** It went out as a
   JSON-encoded string, following a docstring that said the API required one.
@@ -199,5 +204,6 @@ in the old CLI carries over.
   here — local, proxied and remote. The DataDome work above went through a
   standalone script against the 2Captcha API, not through this repo.
 
-[Unreleased]: https://github.com/2scraper/vrbo-scraper/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/2scraper/vrbo-scraper/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/2scraper/vrbo-scraper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/2scraper/vrbo-scraper/releases/tag/v0.1.0
