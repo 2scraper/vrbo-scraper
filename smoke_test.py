@@ -504,12 +504,34 @@ def test_challenge_is_not_always_solvable():
 
     group("block_advice says what to DO")
     advice = page_flow.block_advice(block, headless=False, has_pool=False)
-    ok &= check("it leads with the browser, not the proxy",
-                "channel=chrome" in advice)
+    ok &= check("it does NOT blame the browser build (12 of 12 served on both)",
+                "channel=chrome" not in advice and "reads the CLIENT" not in advice)
+    ok &= check("it says the exit's score is noisy and the browser is not the first lever",
+                "noisy" in advice and "not the first lever" in advice)
     ok &= check("it says the vendor could not be solved and nothing was charged",
                 "nothing was charged" in advice)
     ok &= check("it names the rate response as clearable",
                 "RATE response" in advice)
+    return ok
+
+
+def test_retries_zero_is_refused():
+    group("--retries 0 would never navigate, so the parser refuses it")
+    ok = True
+    import argparse
+    ok &= check("1 is accepted", page_flow.attempts_arg("1") == 1)
+    for bad in ("0", "-1", "x"):
+        try:
+            page_flow.attempts_arg(bad)
+            raised = False
+        except argparse.ArgumentTypeError:
+            raised = True
+        ok &= check(f"{bad!r} is refused", raised)
+    import ast
+    for eng in ("playwright_scraper", "puppeteer_scraper", "selenium_scraper"):
+        src = open(eng + ".py", encoding="utf-8").read()
+        ok &= check(f"{eng} wires --retries through attempts_arg",
+                    '"--retries", type=page_flow.attempts_arg' in src)
     return ok
 
 
@@ -1559,6 +1581,7 @@ def main() -> int:
     ok &= test_pagination()
     ok &= test_page_state()
     ok &= test_challenge_is_not_always_solvable()
+    ok &= test_retries_zero_is_refused()
     ok &= test_page_flow_policy()
     ok &= test_scroll_loop()
     ok &= test_throttle_is_not_completion()

@@ -352,12 +352,12 @@ def _proxy_failure(exc) -> str:
 def _launch_local(pw, args, pool):
     """Launch a browser on `pool`'s current exit; return (browser, context, page).
 
-    Uses REAL Chrome by default, and that is the single most load-bearing
-    line in this engine. Measured on this site, same address, seconds apart:
-    bundled Chromium 429, real Chrome 200. If the channel is unavailable the
-    launch falls back to the bundled Chromium and says clearly that the run
-    is now very likely to be refused — silently falling back would turn a
-    missing browser into "the site blocked us".
+    Uses REAL Chrome by default because it is the more faithful client, not
+    because it was shown to be the gate: three single requests once said so,
+    and twelve interleaved ones (6 + 6, 2026-09-14) found no difference. If
+    the channel is unavailable the launch falls back to the bundled Chromium
+    and says so — silently falling back would turn a missing browser into
+    "the site blocked us".
 
     Factored out so a proxy rotation can tear the whole browser down and call
     it again. Swapping the proxy under a live session would be cheaper and
@@ -377,16 +377,18 @@ def _launch_local(pw, args, pool):
         except (PWError, PWTimeout) as e:
             logger.warning(
                 "Could not launch the %r channel (%s) — falling back to "
-                "Playwright's bundled Chromium. EXPECT HTTP 429: this site "
-                "was measured refusing the bundled Chromium and serving real "
-                "Chrome from the same address seconds apart. Install it with "
-                "`playwright install chrome`, or point --browser-channel at "
-                "one you have (msedge also works).",
+                "Playwright's bundled Chromium. A single early reading had "
+                "it refused where real Chrome was served, but an interleaved "
+                "re-measurement (12 of 12 on both) did not reproduce that; "
+                "real Chrome is still the more faithful client. Install it "
+                "with `playwright install chrome`, or point "
+                "--browser-channel at one you have (msedge also works).",
                 channel, str(e)[:160])
             browser = pw.chromium.launch(**launch_kwargs)
     else:
-        logger.warning("--browser-channel '' launches the bundled Chromium, "
-                       "which this site was measured refusing with HTTP 429.")
+        logger.warning("--browser-channel '' launches the bundled Chromium: "
+                       "a less faithful client than real Chrome, though not "
+                       "measured to be refused more often (see README).")
         browser = pw.chromium.launch(**launch_kwargs)
 
     ctx_kwargs = {"user_agent": _chrome_ua(browser.version),
@@ -1262,7 +1264,7 @@ def parse_args():
                         "sequential button presses and there is nothing to "
                         "hand a second worker. Run several searches in "
                         "parallel instead, one process each.")
-    p.add_argument("--retries", type=int, default=3,
+    p.add_argument("--retries", type=page_flow.attempts_arg, default=3,
                    help="Attempts per page load before giving up (default 3). "
                         "The pause between attempts doubles each time. A page "
                         "that comes back EMPTY is not retried — see "
@@ -1281,13 +1283,12 @@ def parse_args():
     p.add_argument("--browser-channel", default=DEFAULT_BROWSER_CHANNEL,
                    metavar="CHANNEL",
                    help=f"Which installed browser to drive (default "
-                        f"{DEFAULT_BROWSER_CHANNEL!r}). THE flag that decides "
-                        f"whether this works: measured on the same address "
-                        f"seconds apart, Playwright's bundled Chromium was "
-                        f"answered HTTP 429 and real Chrome HTTP 200 with the "
-                        f"full grid. Install it with `playwright install "
-                        f"chrome`. Pass an empty string to use the bundled "
-                        f"Chromium anyway.")
+                        f"{DEFAULT_BROWSER_CHANNEL!r}). A more faithful client "
+                        f"than the bundled Chromium; interleaved on a clean "
+                        f"address both were served 12 of 12, so it is not "
+                        f"what decides access. Install it with `playwright "
+                        f"install chrome`. Pass an empty string to use the "
+                        f"bundled Chromium anyway.")
     p.add_argument("--proxy", default=None,
                    help="Proxy URL, e.g. http://ACCOUNT:PASSWORD@HOST:9999 "
                         "(2captcha.com/proxy)")
@@ -1379,10 +1380,9 @@ def parse_args():
                         "as well as failure. Useful when the row count is "
                         "right but a column comes back empty — see "
                         "TROUBLESHOOTING.md.")
-    # HEADFUL by default. The measured discriminator on this site is the
-    # browser BUILD rather than the window (bundled Chromium was refused
-    # headful), but a real window costs nothing next to real Chrome and
-    # removes one variable from a refusal.
+    # HEADFUL by default. Neither the window nor the browser build was shown
+    # to decide access (see README), but a real window costs nothing next to
+    # real Chrome and removes one variable from a refusal.
     p.add_argument("--headful", dest="headless", action="store_false",
                    default=False,
                    help="Run with a real browser window. THE DEFAULT here.")

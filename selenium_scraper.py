@@ -11,10 +11,10 @@ Read playwright_scraper.py's docstring for what is different about this site.
 Two things are different about this ENGINE:
 
 * **It uses real Chrome for free.** chromedriver drives the Chrome that is
-  installed, which is exactly what this site wants — the Playwright engine
-  has to be told `--browser-channel chrome` to get there, and its bundled
-  Chromium is refused with HTTP 429. So there is no browser-channel flag
-  here: there is nothing to choose.
+  installed — the Playwright engine has to be told `--browser-channel
+  chrome` to get there. So there is no browser-channel flag here: there is
+  nothing to choose. (Real Chrome is the more faithful client; it was not
+  measured to be what decides access.)
 
 * **It cannot authenticate a proxy, and it cannot use an authenticated CDP
   endpoint.** `--proxy-server` takes an address with nowhere to put a
@@ -874,7 +874,7 @@ def parse_args():
                    help="Accepted for family compatibility and REFUSED above "
                         "1: a Vrbo listing has no per-page address, so there "
                         "is nothing to hand a second worker.")
-    p.add_argument("--retries", type=int, default=3,
+    p.add_argument("--retries", type=page_flow.attempts_arg, default=3,
                    help="Attempts per page load before giving up (default 3).")
     p.add_argument("--retry-delay", type=float, default=2.0,
                    help="Seconds before the first page-load retry, doubling "

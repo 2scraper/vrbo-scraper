@@ -639,10 +639,10 @@ def _fetch_one_page(session, args, pool, page_num: int,
             debug_html)
         if not args.chromium_path and not args.cdp_endpoint:
             logger.error(
-                "This engine launched pyppeteer's OWN Chromium, which is the "
-                "build this site was measured refusing. Pass --chromium-path "
-                "pointing at an installed Chrome before concluding anything "
-                "about the address.")
+                "This engine launched pyppeteer's OWN Chromium, an old build "
+                "and a less faithful client than an installed Chrome. It was "
+                "not measured to be what decides access, but pass "
+                "--chromium-path to rule it out before blaming the address.")
         logger.error("%s", page_flow.block_advice(
             html, headless=bool(getattr(args, "headless", False)),
             has_pool=has_pool))
@@ -885,7 +885,7 @@ def parse_args():
     p.add_argument("--concurrency", type=int, default=1, metavar="N",
                    help="Accepted for family compatibility and REFUSED above "
                         "1: a Vrbo listing has no per-page address.")
-    p.add_argument("--retries", type=int, default=3,
+    p.add_argument("--retries", type=page_flow.attempts_arg, default=3,
                    help="Attempts per page load before giving up (default 3).")
     p.add_argument("--retry-delay", type=float, default=2.0,
                    help="Seconds before the first page-load retry, doubling "

@@ -10,6 +10,20 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--retries 0` sent no request at all and reported exit 3.** Every engine
+  loops `range(1, retries + 1)` around the navigation, so 0 meant zero
+  navigations: the page stayed `about:blank` (39 bytes of empty DOM), the
+  classifier called that `blocked`, and the run exited 3 with a 39-byte debug
+  dump having never contacted the site. `--retries` now refuses anything
+  below 1 (`page_flow.attempts_arg`), in all three engines.
+- **The block advice and three help/log texts blamed the browser build.** They
+  still said Vrbo "reads the CLIENT before the address" and that bundled
+  Chromium is refused, which the README's own 12-of-12 interleaved
+  measurement had already retracted. They now say the exit's score is noisy
+  and the browser is not the first lever.
+
 ### CI
 
 - **The canary asks for three pages, not two.** Two exercises the next-button
