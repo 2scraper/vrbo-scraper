@@ -10,6 +10,17 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+### Added
+
+- **`--block-retry-delay SECONDS`** (all three engines). Wait before
+  re-fetching a refused page, doubling per retry. Unset keeps the previous
+  linear `retry-delay x attempt` wait, so existing runs behave identically.
+  One `page_flow.block_pause` serves the three engines. The retry count is
+  unchanged; there is no jitter, since one client has no herd.
+- **`schema_version` in the `.meta.json` sidecar** (`1.0.0`), versioning the
+  output contract rather than the package. `diff_runs.py` refuses two runs
+  whose MAJOR differs.
+
 ### Fixed
 
 - **`--retries 0` sent no request at all and reported exit 3.** Every engine

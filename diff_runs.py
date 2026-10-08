@@ -325,6 +325,18 @@ def _check_comparable(args) -> bool:
                 f"{label} ({path}) was a {status!r} run — stopped after "
                 f"{meta.get('pages_completed')} of {meta.get('pages_requested')} "
                 f"page(s), reason {meta.get('stop_reason')!r}")
+    majors = {}
+    for label, path in (("--old", args.old), ("--new", args.new)):
+        _, meta = _run_status(path)
+        version = str((meta or {}).get("schema_version") or "")
+        if version:
+            majors[label] = version.split(".")[0]
+    if len(set(majors.values())) > 1:
+        problems.append(
+            f"the two runs were written under different output-schema majors "
+            f"({majors}): a column was removed, renamed or changed meaning "
+            f"between them, so a field-by-field diff would describe the "
+            f"schema change rather than the catalogue.")
     if len(set(modes.values())) > 1:
         problems.append(
             f"the two runs are different modes ({modes}). A listing row and a "

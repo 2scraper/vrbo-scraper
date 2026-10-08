@@ -337,6 +337,16 @@ EXIT_PARTIAL = 6
 EXIT_FETCH_FAILED = 5
 
 
+# The version of the OUTPUT CONTRACT: `Product`'s columns and what they mean,
+# plus the sidecar's own fields. Bump MAJOR when a column is removed, renamed
+# or changes meaning (a consumer must change code), MINOR when one is added at
+# the end (a consumer may ignore it), PATCH for a clarification that changes no
+# output. It is deliberately NOT the package version: most releases change no
+# output at all, and a consumer should not have to re-validate on those.
+# Sidecars written before it existed carry no `schema_version`.
+SCHEMA_VERSION = "1.0.0"
+
+
 def write_run_meta(out_prefix: str, meta: dict) -> str:
     """Write a run-metadata sidecar next to the output, return its path.
 
@@ -393,6 +403,7 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
     about WHICH part of the catalogue is missing, not just how much.
     """
     meta = {
+        "schema_version": SCHEMA_VERSION,
         "source": source,
         "mode": mode,
         "status": status,

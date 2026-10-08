@@ -298,6 +298,23 @@ RETRY_ON_BLOCKED = True
 BLOCK_RETRIES_WITHOUT_POOL = 2
 
 
+def block_pause(retry_delay: float, block_attempt: int,
+                backoff_base: Optional[float] = None) -> float:
+    """Seconds to wait before re-fetching a page that came back refused.
+
+    `block_attempt` counts from 0. Without `--block-retry-delay` this is the
+    historical linear `retry_delay * (n + 1)` (2 s, 4 s at the defaults),
+    which is short for a RATE response that was measured clearing minutes
+    later. With it, the wait starts at `backoff_base` and DOUBLES each retry,
+    so a reader who wants to outwait the limit asks for 30 and gets 30, 60.
+    One implementation here so the three engines cannot disagree on it.
+    There is deliberately no jitter: one client has no herd to spread from.
+    """
+    if backoff_base is None:
+        return retry_delay * (block_attempt + 1)
+    return backoff_base * (2 ** block_attempt)
+
+
 def attempts_arg(value: str) -> int:
     """argparse type for `--retries`: an ATTEMPT count, so at least 1.
 
