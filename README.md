@@ -222,7 +222,7 @@ last night's good output. `--allow-empty` is the opt-out.
 |---|---|
 | `playwright_scraper.py` | **Recommended.** Needs `--browser-channel chrome` (the default) — `playwright install chrome` |
 | `selenium_scraper.py` | Drives the Chrome you already have, so it gets the right browser for free. **Cannot authenticate a proxy** (`--proxy-server` has nowhere to put a password) and **cannot use an authenticated CDP endpoint** (`debuggerAddress` is a bare `host:port`) |
-| `puppeteer_scraper.py` | pyppeteer is effectively unmaintained. It downloads its **own Chromium**, which this site refuses, so `--chromium-path /path/to/chrome` is required in practice. It warns before the run rather than after a blocked page |
+| `puppeteer_scraper.py` | pyppeteer is effectively unmaintained. It downloads its **own, old Chromium**; an installed Chrome is the more faithful client, so `--chromium-path /path/to/chrome` is recommended (browser build was not measured to decide access, see the note at the top). It warns before the run rather than after a blocked page |
 | `scraper_api_client.py` | One HTTP request per page via the 2Captcha Scraper API, no local browser. **Measured on this site**: HTTP 200, 3.2 MB, and **3 of 50 cards** at $0.0005 — see below |
 
 All three browser engines produce the same rows. Measured on three live runs

@@ -296,6 +296,26 @@ def is_unpainted(state: str, html: Optional[str]) -> bool:
 # nothing consults is the same defect as dead code (§17).
 RETRY_ON_BLOCKED = True
 BLOCK_RETRIES_WITHOUT_POOL = 2
+
+
+def attempts_arg(value: str) -> int:
+    """argparse type for `--retries`: an ATTEMPT count, so at least 1.
+
+    Every engine loops `range(1, retries + 1)` around its navigation, so 0
+    meant zero navigations: the page stayed `about:blank` (39 bytes of empty
+    DOM), classified as `blocked`, and the run reported exit 3 having never
+    sent a request to the site. Refusing it at the parser is cheaper than
+    teaching that loop what zero means.
+    """
+    import argparse
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer")
+    if n < 1:
+        raise argparse.ArgumentTypeError(
+            f"{n} attempts would never load the page; use 1 for no retry")
+    return n
 BLOCK_RETRIES_WITH_POOL = 3
 
 # One solve per page. Detection is broad on purpose, but a second solve on
@@ -307,8 +327,11 @@ def block_advice(html: Optional[str], headless: bool, has_pool: bool) -> str:
     """What a reader should actually DO about this block.
 
     Exists because the honest first answer on this site is almost never "get
-    a better proxy" — it is "use a real Chrome" — and a message that says so
-    saves an afternoon and a proxy bill.
+    a better proxy" — it is "slow down, the 429 is a rate response" — and a
+    message that says so saves an afternoon and a proxy bill. It used to say
+    "use a real Chrome" instead, on the strength of three single requests;
+    the interleaved re-measurement (12 of 12 served on both builds) found no
+    browser effect, so the browser is no longer named as the cause.
     """
     vendor = challenge_vendor(html or "")
     marker = detect_block_marker(html or "") or "HTTP 429"
@@ -318,14 +341,15 @@ def block_advice(html: Optional[str], headless: bool, has_pool: bool) -> str:
                 f"{vendor!r} this time, which this repo has no solver for, so "
                 f"no solve was attempted and nothing was charged")
     hints = [
-        "this site reads the CLIENT before the address: a bundled Chromium "
-        "was answered 429 and a real Chrome 200 from the same exit seconds "
-        "apart, so run the Playwright engine with its default "
-        "channel=chrome before reaching for anything else",
+        "how this site scores the exit address is noisy: the same address "
+        "was served and challenged minutes apart, and bundled Chromium and "
+        "real Chrome were served 12 of 12 when interleaved on a clean one, "
+        "so changing the browser is not the first lever",
     ]
     if headless:
-        hints.append("and with a real window — --headful is the default here "
-                     "for that reason")
+        hints.append("a real window (--headful, the default here) is still "
+                     "a more faithful client, but it was not what decided "
+                     "access when measured")
     if not has_pool:
         hints.append("the 429 is a RATE response and it clears: the same URL "
                      "was served minutes later from the same address. Slow "
