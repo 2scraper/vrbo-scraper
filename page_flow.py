@@ -2,7 +2,7 @@
 
 Vrbo answers a request five ways, and four of them want a different response,
 which is why this module exists rather than the same triage being written
-three times inside three engines and drifting apart (§1):
+three times inside three engines and drifting apart:
 
     content    the grid is in the document
     empty      a search that genuinely matched nothing. No grid, and — unlike
@@ -29,7 +29,7 @@ passes its own driver's primitives and keeps its browser plumbing to itself:
     first_card_href() -> Optional[str]  the first card's link
     sleep(ms) -> None                   wait
 
-No JavaScript crosses that boundary in either direction (§1): Selenium's
+No JavaScript crosses that boundary in either direction: Selenium's
 `execute_script` takes a function BODY with an explicit `return` where
 Playwright and pyppeteer take `() => expr`, so this module names the
 OPERATION and each engine spells it in its own driver's dialect.
@@ -41,7 +41,7 @@ On this site the scroll is the only way most of the grid is ever seen, and
 the shape of it is unusual enough to be worth stating twice:
 
   * The page body NEVER scrolls. `document.body.scrollHeight ===
-    window.innerHeight === 900` on every capture. §8's "scroll to
+    window.innerHeight === 900` on every capture. The usual advice to "scroll to
     `document.body.scrollHeight`" moves nothing at all here — measured, 12
     window scrolls, 18 cards before and 18 after.
   * The results are in an INNER scroller, `.scrollable-result-section`.
@@ -74,7 +74,7 @@ READY_SELECTOR_LISTING = SELECTORS["item_card"]
 # the thing a row is built from.
 READY_SELECTOR_PROPERTY = SELECTORS["detail_price"]
 
-# Above 1, per §5: waiting for a single match resolves on an unrelated node
+# Above 1: waiting for a single match resolves on an unrelated node
 # long before the grid paints. Two rather than the measured first-paint
 # minimum of three, so a genuine two-result listing is not made to spend the
 # whole timeout — and `min_matches` clamps it further when the site's own
@@ -128,7 +128,7 @@ def wait_for_count(count: Callable[[str], int], sleep: Callable[[int], None],
     `wait_for_function` hands the browser a string to evaluate, which a site
     whose CSP lacks `unsafe-eval` refuses outright — it took a sibling repo's
     run down with `EvalError` and exit 1 on that site's most obvious URL
-    (§18). Vrbo's own CSP was not audited page-kind by page-kind here, which
+   . Vrbo's own CSP was not audited page-kind by page-kind here, which
     is exactly why the question is not being asked: a count poll is a CDP
     call under every CSP and spells the same in all three drivers.
 
@@ -150,7 +150,7 @@ def wait_for_count(count: Callable[[str], int], sleep: Callable[[int], None],
 # ---------------------------------------------------------------------------
 # The scroll, which on this site is where most of the data comes from
 # ---------------------------------------------------------------------------
-# Three stable rounds, not one. §8's rule, and the measurement behind it
+# Three stable rounds, not one. The family's rule, and the measurement behind it
 # here: scrolling the results container took the count 18 -> 50 in the first
 # round and the container's height 5,099 -> 10,232 in the second, then both
 # held still for twenty-three more rounds. A loop that stopped at the first
@@ -169,7 +169,7 @@ SCROLL_MAX_ROUNDS = 20
 # termination condition only for a page that published no counter, and below
 # a known target the loop is twice as patient before giving up.
 SCROLL_STABLE_ROUNDS_BELOW_TARGET = 6
-# The next batch takes longer to arrive than a single pause (§8).
+# The next batch takes longer to arrive than a single pause.
 SCROLL_PAUSE_MS = 1_600
 
 
@@ -190,7 +190,7 @@ def scroll_until_settled(count: Callable[[str], int],
     `target` is what the site's own counter says the page holds. Reaching it
     ends the loop immediately, which saves four idle rounds on every page;
     NOT reaching it does not end anything early, because the gap is reported
-    rather than chased (§8: the rank-gap arithmetic).
+    rather than chased (the rank-gap arithmetic).
 
     Returns the final card count.
     """
@@ -229,7 +229,7 @@ def classify(html: Optional[str], status: Optional[int] = None,
     Getting that wrong is not a style question: a sibling repo shipped two of
     three engines calling this as `classify(html, url=...)`, both crashed on
     their first fetch, and nothing short of a live run or a signature-binding
-    check saw it (§17). This repo's smoke suite binds every shared-module
+    check saw it. This repo's smoke suite binds every shared-module
     call in every engine for that reason.
     """
     if html is None:
@@ -238,7 +238,7 @@ def classify(html: Optional[str], status: Optional[int] = None,
 
 
 # The retry/solve/blocked decision as DATA rather than as three copies of an
-# if-chain in three engines (§1).
+# if-chain in three engines.
 #
 #   parse    is there anything on this page worth writing down?
 #   retry    would fetching it again, later or from a different exit,
@@ -253,10 +253,15 @@ STATE_POLICY: Dict[str, Dict[str, bool]] = {
     # simply empty rather than as a trap.
     "empty":     {"parse": False, "retry": False, "solve": False, "blocked": False},
     # Served and still painting. Wants the readiness wait and the scroll,
-    # not another fetch: refetching a shell buys another shell (§18). Parsed
+    # not another fetch: refetching a shell buys another shell. Parsed
     # because by the time an engine asks, the wait has already run.
     "shell":     {"parse": True,  "retry": False, "solve": False, "blocked": False},
-    "challenge": {"parse": False, "retry": True,  "solve": True,  "blocked": False},
+    # Retried and paid for while the page's attempts last; still a challenge
+    # when they run out means the content was never obtained, which is a
+    # block (exit 3) and not an empty catalogue. With `blocked: False` an
+    # unsolved challenge used to fall through to the parser, give 0 rows and
+    # exit 4 — "the search matched nothing" about a page nobody read.
+    "challenge": {"parse": False, "retry": True,  "solve": True,  "blocked": True},
     "blocked":   {"parse": False, "retry": True,  "solve": False, "blocked": True},
 }
 
@@ -277,6 +282,41 @@ def counts_as_blocked(state: str) -> bool:
     return STATE_POLICY.get(state, STATE_POLICY["blocked"])["blocked"]
 
 
+def unobtained_reason(state: str, rows: int) -> Optional[str]:
+    """Why a page that was served still did not yield its content, or None.
+
+    Decided AFTER the readiness wait, the scroll and the parse, on the final
+    state:
+
+      * rows were parsed, or the site printed its own no-results copy
+        (`empty`): the page answered, None.
+      * `content` (the grid is in the document) and 0 rows: the page states
+        rows and the parser lost them — `parser_found_nothing`.
+      * anything else with 0 rows, in practice a `shell` that never painted:
+        `served_without_results`. A Vrbo error page ("Sorry, we're having a
+        problem on our end") is built from the site's own assets and reads
+        as a shell; measured on a real canary capture, it used to end as
+        exit 4, an empty catalogue, when nothing had been read.
+
+    Neither is a statement about the catalogue, so a run holding no rows
+    exits 5 and one holding earlier pages exits 6.
+    """
+    if rows or state == "empty":
+        return None
+    if state == "content":
+        return "parser_found_nothing"
+    return "served_without_results"
+
+
+def failure_stop_reason(outcome) -> str:
+    """The run's stop_reason for a page outcome that is not ok."""
+    if outcome.load_failed:
+        return "page_load_timeout"
+    if outcome.blocked_by is not None:
+        return f"blocked_{outcome.blocked_by}"
+    return getattr(outcome, "unobtained", None) or "page_not_obtained"
+
+
 def is_unpainted(state: str, html: Optional[str]) -> bool:
     """Whether this page is served but has not painted its grid yet."""
     if state != "shell":
@@ -293,7 +333,7 @@ def is_unpainted(state: str, html: Optional[str]) -> bool:
 # So the budget is non-zero, and it is larger with a pool than without,
 # because a different exit carries a different rate bucket. The engines read
 # these constants rather than computing their own budget — a policy constant
-# nothing consults is the same defect as dead code (§17).
+# nothing consults is the same defect as dead code.
 RETRY_ON_BLOCKED = True
 BLOCK_RETRIES_WITHOUT_POOL = 2
 
@@ -333,11 +373,69 @@ def attempts_arg(value: str) -> int:
         raise argparse.ArgumentTypeError(
             f"{n} attempts would never load the page; use 1 for no retry")
     return n
+
+
+def at_least(minimum, kind=int):
+    """argparse type: a number no smaller than `minimum`.
+
+    For the counts and waits besides `--retries`: a negative `--delay` makes
+    `time.sleep` raise mid-run after page 1 was already paid for, a negative
+    `--proxy-block-retries` silently turns the retry loop off, and `--pages
+    0` asks for nothing. argparse names the flag in its error, so the user
+    sees which value was refused before anything is fetched.
+    """
+    import argparse
+
+    def _parse(value: str):
+        try:
+            n = kind(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"{value!r} is not a{'n integer' if kind is int else ' number'}")
+        if n != n or n < minimum:  # n != n catches NaN
+            raise argparse.ArgumentTypeError(
+                f"{value} is below the minimum of {minimum}")
+        return n
+    _parse.__name__ = f"at_least_{minimum}"
+    return _parse
 BLOCK_RETRIES_WITH_POOL = 3
 
 # One solve per page. Detection is broad on purpose, but a second solve on
 # the same page has never been the answer to the first one failing.
 SOLVES_PER_PAGE = 1
+
+
+class SolveBudget:
+    """The per-page allowance of paid captcha solves.
+
+    Every engine calls its captcha handler twice per fetch attempt: once
+    before the page is classified (so a challenge is cleared before anything
+    is judged) and once after, for a state that says the page really is
+    gated. Counting only the second call left the first one unbounded, and it
+    runs again on every block retry and every rotation. Measured with a
+    stubbed solver before this class existed: 4 purchases per page in each
+    engine against a limit of 1.
+
+    So ONE object is created per page, before the retry loop, and handed to
+    every call site. `spend()` is asked immediately before the purchase and
+    answers False once the allowance is used. It is never reset by a retry or
+    a rotation: a fresh exit is a reason to fetch again, not a fresh
+    allowance.
+    """
+
+    def __init__(self, limit: Optional[int] = None):
+        self.limit = SOLVES_PER_PAGE if limit is None else int(limit)
+        self.spent = 0
+
+    def remaining(self) -> int:
+        return max(0, self.limit - self.spent)
+
+    def spend(self) -> bool:
+        """Claim one solve. False, and nothing claimed, once the limit is reached."""
+        if self.spent >= self.limit:
+            return False
+        self.spent += 1
+        return True
 
 
 def block_advice(html: Optional[str], headless: bool, has_pool: bool) -> str:
@@ -385,7 +483,7 @@ def block_advice(html: Optional[str], headless: bool, has_pool: bool) -> str:
 # this module, because on this site there is no page-2 address to build.
 # `&startIndex=50` and `&page=2` were both tried with a real browser and both
 # answered HTTP 200 with the counter still reading "1 - 50 of 300+" and the
-# same first cards — they do not fail, they silently return page 1 (§18). A
+# same first cards — they do not fail, they silently return page 1. A
 # run built on either would add no new sku, call the listing exhausted and
 # report COMPLETE holding a sixth of the catalogue.
 #
@@ -409,7 +507,7 @@ def has_next_page(count: Callable[[str], int]) -> bool:
 
     The weakest of the termination signals and therefore the second one
     asked: a missing button is a property of the DOM, while "this page added
-    no sku we had not already seen" is a property of the catalogue (§7).
+    no sku we had not already seen" is a property of the catalogue.
     """
     return count(NEXT_PAGE_SELECTOR) > 0
 
@@ -421,8 +519,8 @@ def has_next_page(count: Callable[[str], int]) -> bool:
 # and the engine mapped False to `pagination_exhausted` — which is in
 # COMPLETE_STOP_REASONS. So a run that was being RATE LIMITED reported status
 # "complete" holding page 1. That is precisely the silent-success failure
-# this family exists to prevent (§7), and it was caught by running the thing
-# rather than by reading it (§15).
+# this family exists to prevent, and it was caught by running the thing
+# rather than by reading it.
 ADVANCED = "advanced"
 NO_BUTTON = "no_button"          # the listing genuinely ran out
 NO_TURNOVER = "no_turnover"      # pressed, and the grid never came back
@@ -487,7 +585,7 @@ def page_gap(html: Optional[str], parsed: int) -> Optional[int]:
     gap of zero, and the two must not read the same in a sidecar. Where the
     counter IS there this is arithmetic rather than a threshold — the page
     states it holds items 1 to 50, so 40 rows means ten cards never loaded
-    (§8). One measured page-2 run had exactly that.
+   . One measured page-2 run had exactly that.
     """
     expected = expected_cards(html)
     if expected is None:
@@ -502,7 +600,7 @@ def concurrency_limit(url: str) -> Optional[int]:
     """The highest `--concurrency` this URL can honestly support.
 
     Always 1. Page 5 of a listing that only exists behind four button presses
-    cannot be handed to a worker (§18).
+    cannot be handed to a worker.
     """
     return 1
 

@@ -17,14 +17,14 @@ one does not), and `diff_runs.py` can compare a listing run against a
 property run on the columns both populate.
 
 Four family columns are NOT here, and each absence is a measurement rather
-than an oversight (§9: a column that is null on every row of every run should
+than an oversight (a column that is null on every row of every run should
 not exist, and removing it needs the number written down):
 
     original_price   0 strike nodes across 218 cards, 6 captures and 4
     discount_pct     storefronts — `uitk-text-line-through`, `strikethrough`,
                      "was $", "% off": zero occurrences of every one of them.
                      This site has no discount chain on a listing card, so
-                     §4's tile-price overlay is NOT ported: dead code that
+                     the family's tile-price overlay is NOT ported: dead code that
                      looks load-bearing is worse than no code.
     brand            A property has no manufacturer and a card publishes no
                      property-manager name. The nearest real value is the
@@ -38,17 +38,22 @@ Everything below is row-class-agnostic: pass `row_cls` so an empty CSV still
 gets the right header for the mode that produced it.
 """
 
+import contextlib
 import csv
 import json
+import os
+import stat
+import tempfile
 from dataclasses import dataclass, asdict, field, fields
 from datetime import datetime, timezone
 from typing import Optional, List, Set, Sequence, Any, Type
 
 
 # The storefront a row came from. Unlike a sibling repo's single storefront,
-# this one genuinely varies: Vrbo runs six of them (vrbo.com, fewo-direkt.de,
-# abritel.fr, bookabach.co.nz, stayz.com.au, and vrbo.com/en-gb), all on the
-# same Expedia front end and all serving the identical card markup. A Berlin
+# this one genuinely varies: Vrbo runs five hosts (vrbo.com, fewo-direkt.de,
+# abritel.fr, bookabach.co.nz, stayz.com.au; vrbo.com/en-gb is a path on the
+# first one and is recorded as vrbo.com), all on the same Expedia front end
+# and all serving the identical card markup. A Berlin
 # rental is on fewo-direkt.de and nowhere else, so this column is the only
 # thing that says which catalogue a row is from. `product_parser.source_of`
 # fills it from the URL; this is the fallback for a row built without one.
@@ -77,7 +82,7 @@ class Product:
     price: Optional[float] = None
     # From the page's own `"currency":"USD"` config where it states one — a
     # written ISO code, which is a fact rather than a symbol read off a tile
-    # (§4). Measured USD on vrbo.com and EUR on fewo-direkt.de. Falls back to
+    #. Measured USD on vrbo.com and EUR on fewo-direkt.de. Falls back to
     # the symbol beside the amount, and is null rather than a defaulted
     # "USD" when neither is available.
     currency: Optional[str] = None
@@ -92,7 +97,7 @@ class Product:
     # 49 of 50, from the card's screen-reader string — `(1,299 reviews)` on
     # vrbo.com and `(1.614 bewertungen)` on fewo-direkt.de. One of those is
     # 1299 and the other 1614; `re.search(r"\d+", ...)` returns 1 for the
-    # second, which is the amazon-scraper review-count bug (§10) in a
+    # second, which is the amazon-scraper review-count bug in a
     # different costume.
     review_count: Optional[int] = None
     # Sparse ON PURPOSE, and the reason is unusual: 41 of 50 cards carry no
@@ -100,7 +105,7 @@ class Product:
     # fold. So this is populated for the cards that were on screen and null
     # for the rest, and it is recognised POSITIVELY by the media host so a
     # future placeholder cannot fill the column with something that is not an
-    # image (§4).
+    # image.
     image_url: Optional[str] = None
     # The location breadcrumb, and only in --mode property: a detail page's
     # `BreadcrumbList` JSON-LD gives
@@ -117,19 +122,19 @@ class Product:
     # There is no structured price to reconcile against on ANY page kind of
     # this site — a detail page's two JSON-LD blocks are a BreadcrumbList and
     # an FAQPage, neither of them a Product — so this column records which DOM
-    # node was read rather than which of two views agreed (§4). diff_runs.py
+    # node was read rather than which of two views agreed. diff_runs.py
     # reports a price change that comes with a price_source change as
     # `source_changed`, not `changed`.
     price_source: Optional[str] = None
     # Which listing page this row came from (1-based) and its place in that
     # page as the site ordered it. Without `page`, `position` is ambiguous —
     # it restarts at 1 on every page, and a sibling repo shipped 60 of 119
-    # rows silently claiming a position another row already held (§18). Both
+    # rows silently claiming a position another row already held. Both
     # null in --mode property, where there is no page.
     page: Optional[int] = None
     position: Optional[int] = None
 
-    # ---- Vrbo-specific, appended after the family prefix (§9) ----
+    # ---- Vrbo-specific, appended after the family prefix ----
     # What `rating` is out of, read from the card's own screen-reader string
     # ("8.6 out of 10", "8,0 von 10") rather than hardcoded — so if the site
     # ever changes scale the column says so instead of the numbers silently
@@ -185,7 +190,7 @@ class Product:
     price_note: Optional[str] = None
     # Which kind of page this row came off: search or property. Recorded
     # because the repo reads more than one kind and the mode is no longer
-    # implied by the source (§9).
+    # implied by the source.
     listing_kind: Optional[str] = None
 
 
@@ -240,18 +245,90 @@ def dedupe_by_sku(rows: Sequence[Any], seen: Set[str]) -> List[Any]:
 LIST_CSV_SEPARATOR = " | "
 
 
+@contextlib.contextmanager
+def _atomic(path: str, newline: Optional[str] = None):
+    """Write to a temporary file beside `path`, then rename over it.
+
+    Plain truncating `open` empties the file before a single byte is written,
+    so a crash, a kill or a full disk halfway through `json.dump` leaves a
+    SHORTER file where a complete one was. That breaks the promise `save`
+    keeps when it refuses to overwrite good output with an empty result, by a
+    different route: the previous good run is destroyed by the attempt to
+    replace it rather than by its outcome. The sidecar matters most, since it
+    is the file a consumer branches on.
+
+    The temporary file goes in the SAME directory on purpose: `os.replace`
+    is only atomic within one filesystem, and a temp file under /tmp can be
+    on another one, where the rename degrades to an interruptible copy.
+    `fsync` before the rename makes the content durable, not merely visible.
+
+    `NamedTemporaryFile` creates the file 0600 and a rename keeps that, so
+    the mode is set explicitly: an existing target keeps its own (someone may
+    have tightened it), a new one gets what `open()` would have given it.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline=newline, dir=directory,
+        prefix=os.path.basename(path) + ".", suffix=".tmp", delete=False)
+    try:
+        with handle:
+            yield handle
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        os.chmod(handle.name, mode)
+        os.replace(handle.name, path)
+    except BaseException:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+        raise
+
+
+# A spreadsheet treats a cell beginning with one of these as a FORMULA, and
+# every string column here (title, location_note, badges, amenities,
+# price_note) is text written by a host or owner, not by this code. The tab
+# and the newline are here because some readers strip a leading one,
+# exposing whatever follows it.
+CSV_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+# Excel, Google Sheets and LibreOffice read the apostrophe as "the rest of
+# this cell is text" and do not show it; a consumer parsing the CSV with
+# `csv` sees it, which is why the count goes in the sidecar.
+CSV_FORMULA_ESCAPE = "'"
+
+
 def _csv_value(v: Any) -> Any:
     if isinstance(v, (list, tuple)):
         return LIST_CSV_SEPARATOR.join(str(x) for x in v)
     return v
 
 
+def _csv_escape(v: Any):
+    """Neutralise a formula-shaped cell. Returns (value, was_escaped).
+
+    Only STRINGS are touched: escaping a number would turn `-5` into text and
+    break every sum a consumer writes over the column. CSV only; the JSON
+    keeps the site's bytes, and `csv_cells_escaped` in the sidecar declares
+    that the two files differ.
+    """
+    if isinstance(v, str) and v.startswith(CSV_FORMULA_LEADS):
+        return CSV_FORMULA_ESCAPE + v, True
+    return v, False
+
+
 def write_json(rows: Sequence[Any], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
+    with _atomic(path) as f:
         json.dump([asdict(r) for r in rows], f, ensure_ascii=False, indent=2)
 
 
-def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Product) -> None:
+def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Product) -> int:
     # An empty result still gets the header row. A zero-byte file makes a
     # consumer fail on read (no columns to parse) instead of reading a valid
     # table with zero rows — and "an empty result is still a well-formed
@@ -260,11 +337,22 @@ def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Product) -> None:
     # The header comes from `row_cls`, not from the first row, so an empty
     # run still writes the columns of the mode that produced it.
     fieldnames = [f.name for f in fields(row_cls)]
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    escaped = 0
+    # `newline=""` is the csv module's documented requirement and has to
+    # survive the move into the temp file, or rows gain a stray CR on Windows.
+    with _atomic(path, newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in rows:
-            writer.writerow({k: _csv_value(v) for k, v in asdict(r).items()})
+            row = {}
+            for k, v in asdict(r).items():
+                # AFTER `_csv_value`: a list joined into one cell is text
+                # too, and its first element can be formula-shaped.
+                value, was_escaped = _csv_escape(_csv_value(v))
+                row[k] = value
+                escaped += was_escaped
+            writer.writerow(row)
+    return escaped
 
 
 # Exit code used when a run completes but produced nothing. Distinct from 1
@@ -276,19 +364,15 @@ EXIT_NO_PRODUCTS = 4
 # search genuinely matched nothing" from "something stood between us and the
 # content". See product_parser.detect_bot_challenge.
 #
-# On this site this code specifically does NOT cover the three ways to get a
-# real page with no products on it: a `/p/<slug>` discovery hub, which
-# answers 200 with banners and carousels and no grid; a search whose query
-# matches nothing ("Oops, produk nggak ditemukan"); and one page past the
-# end of a category listing. All three are EXIT_NO_PRODUCTS — the request
-# was served exactly as asked and simply has no products on it. Reporting
-# any of them as blocked would send a user hunting for a proxy problem that
-# does not exist.
+# On this site the code does NOT cover a search that genuinely matches
+# nothing: the site prints its own no-results copy, which
+# product_parser.detect_page_state reads as `no_results`, and that is
+# EXIT_NO_PRODUCTS — the request was served exactly as asked.
 #
-# What EXIT_BLOCKED means here is unusually literal: this site refuses a
-# address it has scored NOTHING at all. No status code, no interstitial, no
-# vendor marker — the HTTP/2 stream is reset and the run sees a connection
-# error rather than a page.
+# What EXIT_BLOCKED means here: Expedia's own "Bot or Not?" handler answered
+# instead of the page (HTTP 429 with a challenge body), or a challenge was
+# still on the page after the allowed solves and retries. Neither says
+# anything about the catalogue.
 EXIT_BLOCKED = 3
 
 # Exit code for a run that gathered SOME rows and then stopped early — a
@@ -359,7 +443,7 @@ def write_run_meta(out_prefix: str, meta: dict) -> str:
     both complete, and between runs of different `mode`.
     """
     path = f"{out_prefix}.meta.json"
-    with open(path, "w", encoding="utf-8") as f:
+    with _atomic(path) as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
     print(f"[+] Wrote run metadata -> {path} (status={meta.get('status')})")
     return path
@@ -392,7 +476,7 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
     `results_total_is_floor` and `cards_missing`, so a consumer can see that
     the site said "1 - 50 of 300+" and the run merged 40 rows off that page
     WITHOUT re-reading the HTML. That gap is arithmetic rather than a
-    threshold (§8), and one measured run had it: page 2 read "51 - 100 of
+    threshold, and one measured run had it: page 2 read "51 - 100 of
     300+" and yielded 40 cards.
 
     `pages_failed` lists the pages that did not yield data, by number.
@@ -418,14 +502,15 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
     }
     if extra:
         # Merged rather than nested under a key, so a consumer reads
-        # `shop_rating` at the top level beside `products`. Run fields win a
+        # `results_total` at the top level beside `products`. Run fields win a
         # name collision: a caller cannot accidentally overwrite `status`.
         meta.update({k: v for k, v in extra.items() if k not in meta})
     return meta
 
 
 def save(rows: Sequence[Any], out_prefix: str, fmt: str,
-         allow_empty: bool = False, row_cls: Type = Product) -> int:
+         allow_empty: bool = False, row_cls: Type = Product,
+         stats: Optional[dict] = None) -> int:
     """Write JSON/CSV and return a process exit code.
 
     Returns 0 when rows were written, EXIT_NO_PRODUCTS when there were none.
@@ -452,8 +537,17 @@ def save(rows: Sequence[Any], out_prefix: str, fmt: str,
         write_json(rows, f"{out_prefix}.json")
         print(f"[+] Saved {len(rows)} products -> {out_prefix}.json")
     if fmt in ("csv", "both"):
-        write_csv(rows, f"{out_prefix}.csv", row_cls=row_cls)
+        escaped = write_csv(rows, f"{out_prefix}.csv", row_cls=row_cls)
         print(f"[+] Saved {len(rows)} products -> {out_prefix}.csv")
+        # Through `stats`, not a return value: this function's return IS the
+        # exit code and every engine exits with it.
+        if stats is not None:
+            stats["csv_cells_escaped"] = escaped
+        if escaped:
+            print(f"[!] {escaped} CSV cell(s) began with a formula character "
+                  f"and were prefixed with {CSV_FORMULA_ESCAPE!r} so a "
+                  f"spreadsheet reads them as text. The JSON output is "
+                  f"unchanged - see csv_cells_escaped in the sidecar.")
     return 0 if rows else EXIT_NO_PRODUCTS
 
 
@@ -472,7 +566,7 @@ def save(rows: Sequence[Any], out_prefix: str, fmt: str,
 # (measured: `&startIndex=50` and `&page=2` both answered HTTP 200 with the
 # counter still reading "1 - 50 of 300+" and the same first cards). So a run
 # that trusted a built URL would find no new sku, call the listing
-# exhausted, and report COMPLETE holding a sixth of the catalogue (§18).
+# exhausted, and report COMPLETE holding a sixth of the catalogue.
 #
 # "no new products" is therefore the data-side termination condition, and
 # "pagination_exhausted" means the site's own button was gone or disabled —
@@ -517,12 +611,18 @@ def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
     # names has a hole for every name nobody added to it.
     complete = stop_reason in COMPLETE_STOP_REASONS and not pages_failed
     row_cls = ROW_CLASS_BY_MODE.get(mode, Product)
-    rc = save(rows, out_prefix, fmt, allow_empty=allow_empty, row_cls=row_cls)
+    write_stats: dict = {}
+    rc = save(rows, out_prefix, fmt, allow_empty=allow_empty, row_cls=row_cls,
+              stats=write_stats)
     wrote_output = bool(rows) or allow_empty
 
     if wrote_output:
         status = "complete" if (rows and complete) else (
             "partial" if rows else "failed")
+        # Merged UNDER the caller's `extra`: a collision here would be
+        # housekeeping silently dropping site data.
+        if write_stats:
+            extra = {**write_stats, **(extra or {})}
         write_run_meta(out_prefix, run_meta(
             status=status, stop_reason=stop_reason,
             pages_requested=pages_requested, pages_completed=pages_completed,

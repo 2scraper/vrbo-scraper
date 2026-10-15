@@ -31,7 +31,7 @@ WHAT IT ENFORCES, and why each rule is here
     literals one capture happened to contain, so the next capture is caught
     too. Those keys are the SITE's public ones rather than anybody's secret,
     but a 32-hex string in a public repo reads as a live credential to every
-    scanner that looks, including this repo's own CI grep (§10).
+    scanner that looks, including this repo's own CI grep.
 """
 import json
 import os
@@ -59,6 +59,18 @@ SOURCES = {
     "LISTING_AU":    ("host_stayz.html",
                       "https://www.stayz.com.au/search?destination=Sydney%2C+New+South+Wales%2C+Australia", 2),
 }
+# A card the site renders WITHOUT a price: "This property does not allow
+# 2-night stays for those dates", on a dated Orlando search served to the
+# scheduled canary on 2026-10-15. Its row must carry no currency either.
+UNPRICED_SOURCE = ("vrbo_search_orlando_dated_2026-10-15.html",
+                   "https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=2026-11-14&endDate=2026-11-16&adults=2")
+
+
+def _unpriced(card) -> bool:
+    return (card.select_one(P.SELECTORS["card_price"]) is None
+            and "does not allow" in card.get_text(" "))
+
+
 EMPTY_SOURCES = {
     "EMPTY_EN": ("vrbo_empty_nonsense.html", "https://www.vrbo.com/search?destination=qzxwvkjhgfd"),
     "EMPTY_DE": ("vrbo_empty_de.html", "https://www.fewo-direkt.de/search?destination=qzxwvkjhgfd"),
@@ -66,6 +78,14 @@ EMPTY_SOURCES = {
 }
 BLOCK_SOURCE = ("block_429_botornot_curl.html", "https://www.vrbo.com/search?destination=Orlando")
 PROPERTY_SOURCE = ("vrbo_detail_pdp_lo.html", "https://www.vrbo.com/pdp/lo/63925107")
+# The site's own error copy in place of the grid ("Sorry, we're having a
+# problem on our end" + "Try again"), served by vrbo.com to the scheduled
+# canary on 2026-10-07 for a dated Orlando search. Built from the site's own
+# assets, no counter, no no-results copy, no cards: it classifies as `shell`
+# and parses to 0 rows, and before the not-obtained rule it ended a run as
+# exit 4, "the search matched nothing".
+SITE_ERROR_SOURCE = ("vrbo_site_error_2026-10-07.html",
+                     "https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=2026-11-14&endDate=2026-11-16&adults=2")
 
 # A card that keeps the SLUG route must survive into LISTING_DE: it is the
 # fifth URL shape and only the local brands use it, so a fixture without one
@@ -126,7 +146,7 @@ def _head(soup: BeautifulSoup, html: str) -> str:
     return f'<html lang="{lang}"><head>{assets}{config}</head><body>'
 
 
-def build_listing(name, filename, url, keep):
+def build_listing(name, filename, url, keep, pick=None):
     path = CAPTURES / filename
     full = path.read_text(encoding="utf-8")
     soup = BeautifulSoup(full, "html.parser")
@@ -134,7 +154,10 @@ def build_listing(name, filename, url, keep):
     if not cards:
         raise SystemExit(f"{filename}: no cards found — is this a real capture?")
 
-    chosen = list(cards[:keep])
+    chosen = list(cards[:keep]) if pick is None else [
+        c for c in cards if pick(c)][:keep]
+    if not chosen:
+        raise SystemExit(f"{name}: no card matched what this fixture is for")
     # Make sure at least one slug-route card is in the German fixture.
     if name == "LISTING_DE" and not any(SLUG_ROUTE_RE.search(str(c)) for c in chosen):
         for card in cards:
@@ -217,6 +240,36 @@ def build_block(filename, url):
     return trimmed
 
 
+def build_site_error(filename, url):
+    """Keep the error block's heading and button, nothing session-bound.
+
+    The block's sibling feedback link carries the visitor's device id in its
+    query string, so only the heading and the button are kept, beside the
+    usual head (asset hosts, so `served_by_vrbo` still holds).
+    """
+    full = (CAPTURES / filename).read_text(encoding="utf-8")
+    soup = BeautifulSoup(full, "html.parser")
+    heading = soup.find("h2", string=re.compile(r"having a problem"))
+    if heading is None:
+        raise SystemExit(f"{filename}: no error heading — is this the capture?")
+    button = heading.find_next_sibling("button")
+    block = ('<div data-stid="split-view-search-list-container"><div>'
+             + str(heading) + (str(button) if button is not None else "")
+             + "</div></div>")
+    trimmed = _head(soup, full) + block + "</body></html>"
+    for html, label in ((full, "original"), (trimmed, "trimmed")):
+        state = P.detect_page_state(html, None, url)
+        if state != "shell" or P.parse_products(html, url):
+            raise SystemExit(f"SITE_ERROR: {label} reads as {state!r} with "
+                             f"rows; the fixture no longer shows the case")
+    leftovers = re.findall(r"\b[0-9a-fA-F]{24,}\b|duaid", trimmed)
+    if leftovers:
+        raise SystemExit(f"SITE_ERROR: session material left in: {leftovers[:3]}")
+    print(f"  SITE_ERROR: {len(full)} -> {len(trimmed)} bytes, classifies as "
+          f"shell with 0 rows")
+    return trimmed
+
+
 def build_property(filename, url):
     full = (CAPTURES / filename).read_text(encoding="utf-8")
     soup = BeautifulSoup(full, "html.parser")
@@ -270,6 +323,10 @@ def main():
     for name, (filename, url, keep) in SOURCES.items():
         fixtures[name] = build_listing(name, filename, url, keep)
         urls[name] = url
+    fixtures["LISTING_UNPRICED"] = build_listing(
+        "LISTING_UNPRICED", UNPRICED_SOURCE[0], UNPRICED_SOURCE[1], 1,
+        pick=_unpriced)
+    urls["LISTING_UNPRICED"] = UNPRICED_SOURCE[1]
     for name, (filename, url) in EMPTY_SOURCES.items():
         fixtures[name] = build_empty(name, filename, url)
         urls[name] = url
@@ -277,10 +334,12 @@ def main():
     urls["BLOCK_429"] = BLOCK_SOURCE[1]
     fixtures["PROPERTY_US"] = build_property(*PROPERTY_SOURCE)
     urls["PROPERTY_US"] = PROPERTY_SOURCE[1]
+    fixtures["SITE_ERROR"] = build_site_error(*SITE_ERROR_SOURCE)
+    urls["SITE_ERROR"] = SITE_ERROR_SOURCE[1]
     # Chromium's own answer when a proxy is dead. 39 bytes and no markup at
     # all — Playwright does not expose the interstitial, so this is what a
     # caller actually gets. It must classify as blocked, which is the
-    # inverted-detection case §18 describes.
+    # inverted-detection case: an absent page must not read as served.
     fixtures["BROWSER_ERROR"] = "<html><head></head><body></body></html>"
     urls["BROWSER_ERROR"] = "https://www.vrbo.com/search?destination=Orlando"
     fixtures["_URLS"] = urls

@@ -3,7 +3,7 @@
 This is the only module that is allowed to know what Vrbo's markup looks
 like. The engines know a handful of named constants; `page_flow.py` knows the
 policy that follows from what this module reports; everything else in the
-repo is site-agnostic (CLAUDE.md §1).
+repo is site-agnostic.
 
 Two things about this site shape the whole file, and both were measured
 rather than assumed.
@@ -12,7 +12,7 @@ rather than assumed.
 `application/ld+json` blocks, zero `__NEXT_DATA__`, and a
 `window.__APOLLO_STATE__` holding three keys — a banner — because the grid
 arrives over client-side POSTs to `/graphql`. So the primary path is the DOM
-(§4's "the answer may be zero"), anchored on Vrbo's own `data-stid`
+(the "the answer may be zero"), anchored on Vrbo's own `data-stid`
 attributes rather than on the `uitk-…` class names, which are a design
 system's and churn with it. A detail page DOES carry two JSON-LD blocks and
 neither is a `Product`: a `BreadcrumbList` and an `FAQPage`. The breadcrumb
@@ -24,7 +24,7 @@ element is reached by a different attribute depending on which one served
 it: a card's price container is `data-stid="product-price-summary"` on
 vrbo.com and `data-test-id="price-summary"` on fewo-direkt.de. A selector
 naming one of them returns a null price on every row of the other site while
-every other column looks fine — §15's "run a SECOND country site", earned
+every other column looks fine — the rule "run a SECOND country site", earned
 here within an hour of trying one.
 """
 
@@ -46,7 +46,7 @@ from output_writer import Product, SOURCE_DEFAULT
 # ---------------------------------------------------------------------------
 # Vrbo publishes NO `<link rel="alternate" hreflang=...>` set anywhere —
 # checked on every capture, on both a search page and a detail page — so
-# §5's "take the host table from the site's own hreflang set" has nothing to
+# The usual "take the host table from the site's own hreflang set" has nothing to
 # take. Every host below was therefore fetched and checked instead, and each
 # one's `siteid` is the Expedia site id its own pages carry, which is what
 # tells the storefronts apart in the markup:
@@ -97,7 +97,7 @@ def site_host(url: str) -> Optional[str]:
 def unsupported_reason(url: str) -> Optional[str]:
     """Why this URL is not one this scraper reads, or None if it is.
 
-    Refused WITH the reason (§5): "is not a Vrbo site" is false for
+    Refused WITH the reason: "is not a Vrbo site" is false for
     homeaway.com and sends the reader hunting for a typo that is not there.
     """
     parts = urlsplit(url)
@@ -129,7 +129,7 @@ def source_of(url: str) -> str:
 # Used ONLY as a last resort, and it exists because of one specific way to be
 # wrong: stayz.com.au and bookabach.co.nz print a BARE `$`, and reading that
 # as USD turns an A$18 property into an $18 one — a plausible number in the
-# wrong currency, which is the worst kind (§4 ranks a bare symbol last for
+# wrong currency, which is the worst kind (a bare symbol ranks last for
 # exactly this reason). The host is a fact about which storefront served the
 # page, so it beats guessing from the symbol; the page's own `"currency"`
 # config still beats both, and vrbo.com's currency picker is reflected there.
@@ -152,7 +152,7 @@ HOST_CURRENCY: Dict[str, str] = {
 # is a HomeAway-legacy id that keeps its `ha` suffix. All three are the
 # path's last segment, which is what the site's own link commits to, so that
 # is what `sku` holds.
-# A FIFTH shape, and only the second storefront found it (§15): the local
+# A FIFTH shape, and only the second storefront found it: the local
 # brands route some properties through a localized SEO slug —
 # `/ferienwohnung-ferienhaus/p5813635` on fewo-direkt.de,
 # `/holiday-rental/p20304340` on stayz.com.au,
@@ -231,7 +231,7 @@ def expedia_property_id_from_url(url: str) -> Optional[str]:
 #
 # So a `page_url()` built on either convention would fetch page 1 again, find
 # no new sku, conclude the listing was exhausted and report a COMPLETE run
-# holding a sixth of the catalogue (§18). There is deliberately no such
+# holding a sixth of the catalogue. There is deliberately no such
 # function in this module: the only way to page 2 is to press the site's own
 # button, which fires a `/graphql` POST and leaves the address bar untouched.
 #
@@ -241,7 +241,7 @@ def expedia_property_id_from_url(url: str) -> Optional[str]:
 PAGINATES_BY_URL = False
 
 # The button, and the counter beside it. Both are `data-stid`, which is the
-# site's own test id rather than a build-hash class (§4).
+# site's own test id rather than a build-hash class.
 NEXT_PAGE_SELECTOR = '[data-stid="next-button"]:not([disabled])'
 PAGINATION_SELECTOR = '[data-stid="pagination-navigation"]'
 RESULTS_HEADER_SELECTOR = '[data-stid="results-header-message"]'
@@ -268,12 +268,12 @@ SELECTORS: Dict[str, str] = {
     "item_card": '[data-stid="lodging-card-responsive"]',
     # The card's link to the property. `open-product-information` is the
     # whole-card overlay anchor; it is the one link a card has to its own
-    # property, which matters because the tile-scoping failure §4 describes
+    # property, which matters because the tile-scoping failure (a price read from a neighbouring tile)
     # starts with a card that links to itself twice.
     "item_link": '[data-stid="lodging-card-responsive"] a[data-stid="open-product-information"]',
     # The results list is an INNER scroller. The page body does not scroll at
     # all: `document.body.scrollHeight === window.innerHeight === 900` on
-    # every capture, so §8's "scroll to document.body.scrollHeight" moves
+    # every capture, so the usual "scroll to document.body.scrollHeight" moves
     # nothing here — measured, 12 window scrolls, 18 cards before and 18
     # after. Scrolling THIS element reached 50 of 50 in two rounds.
     "scroll_container": ".scrollable-result-section",
@@ -306,14 +306,14 @@ SELECTORS: Dict[str, str] = {
 #     counter       1 - 50 of 300+      vs   1–50 von >300
 #
 # `int("1.614")` raises and `re.search(r"\d+", "1.614")` returns 1 — the
-# amazon-scraper `review_count` bug (§10) in a different costume. Everything
+# amazon-scraper `review_count` bug in a different costume. Everything
 # numeric on this site goes through `_normalize_amount`.
 _GROUP_SPACES = "    "
 _AMOUNT = (r"\d{1,3}(?:[.,    ]\d{3})+(?:[.,]\d{1,2})?"
            r"|\d+(?:[.,]\d{1,2})?")
 
 # Currency symbols this family of storefronts actually prints, longest first
-# so `A$` is not swallowed by a bare `$` (§4). The bare `$` is last and means
+# so `A$` is not swallowed by a bare `$`. The bare `$` is last and means
 # USD, because vrbo.com is the only storefront here that prints it alone.
 CURRENCY_SYMBOLS: Tuple[Tuple[str, str], ...] = (
     ("NZ$", "NZD"), ("A$", "AUD"), ("CA$", "CAD"), ("C$", "CAD"),
@@ -330,7 +330,7 @@ _BARE_NUMBER_RE = re.compile(_AMOUNT)
 
 # Real ISO 4217 codes this family's storefronts quote in. An allowlist rather
 # than `[A-Z]{3}`, so a three-letter word in a property title cannot become a
-# currency (§4).
+# currency.
 ISO_CURRENCIES = frozenset((
     "USD", "EUR", "GBP", "AUD", "NZD", "CAD", "CHF", "SEK", "NOK", "DKK",
     "PLN", "CZK", "HUF", "JPY", "MXN", "BRL", "ZAR", "SGD", "HKD", "THB",
@@ -344,7 +344,7 @@ def _normalize_amount(raw: str) -> Optional[float]:
 
     `1,234.56` / `1.234,56` / `1 234,56`, the space form allowing NBSP,
     narrow NBSP and thin space — a rendered page uses a no-break variant so
-    the number does not wrap, and missing them parses `1 234 €` as 234 (§4).
+    the number does not wrap, and missing them parses `1 234 €` as 234.
 
     Whichever of dot and comma comes LAST is the decimal point. Where only
     one appears, exactly three trailing digits is a thousands grouping,
@@ -400,7 +400,7 @@ def prices_in(text: str) -> List[float]:
 
     Removed first rather than rejected afterwards: a rejected match has
     already consumed the symbol, so skipping it loses the real price too
-    (§4).
+   .
     """
     out: List[float] = []
     for match in _PRICE_RE.finditer(_PCT_RE.sub(" ", text or "")):
@@ -418,7 +418,7 @@ def price_in(text: str) -> Optional[float]:
 def currency_in(text: str, url: str = "") -> Optional[str]:
     """The currency a written amount wears, or None.
 
-    The weak sources, in §4's own order: a written ISO code names itself; a
+    The weak sources, in order of trust: a written ISO code names itself; a
     PREFIXED symbol (`A$`, `NZ$`, `US$`) is nearly as good and is matched
     longest-first so it is not swallowed by the bare one; a bare `$` is a
     guess, and is resolved from the HOST rather than defaulted to USD — a
@@ -486,7 +486,7 @@ def results_range(html: str) -> ResultsRange:
     """Parse the pagination counter.
 
     This is the completeness oracle for a run, and it is arithmetic rather
-    than a threshold (§8, the amazon rank gap): the page states that it holds
+    than a threshold (the amazon rank gap): the page states that it holds
     items 1 to 50, so merging 40 rows off it is proof that ten cards never
     loaded. One measured run did exactly that — page 2 read `51 - 100 of
     300+` and yielded 40 cards — and without this counter the run would have
@@ -552,7 +552,7 @@ CHALLENGE_MARKERS: Tuple[str, ...] = (
 # implements reCAPTCHA v2 and v3 and nothing else — no DataDome, no Arkose,
 # no proof-of-work — so a challenge naming one of those is reported as
 # `blocked` rather than `challenge`, and no solve is attempted and nothing is
-# charged (§8's "detected ≠ blocking ≠ paying"). The measured challenge on
+# charged (the "detected ≠ blocking ≠ paying"). The measured challenge on
 # this site was `datadome-challenge`, so this distinction is the normal case
 # here rather than an edge one.
 SOLVABLE_CHALLENGES: Tuple[str, ...] = ("recaptcha",)
@@ -564,7 +564,7 @@ _WHICH_CHALLENGE_RE = re.compile(r'whichChallenge\\*"\s*:\s*\\*"([a-z0-9_-]+)',
 # hold — `akamai` above all — is on the pages this site SERVES. Vrbo is
 # fronted by Akamai Bot Manager and every good page loads its sensor script
 # from a rotating path on vrbo.com's own origin, so `akamai` matches a 899 KB
-# page holding the full grid. §18's rule, and the reason it is a rule: a
+# page holding the full grid. That is the rule, and the reason it is a rule: a
 # marker that matches every page is worse than no marker.
 #
 # The generic reCAPTCHA/hCaptcha shapes below are kept as a forward-looking
@@ -582,12 +582,12 @@ BOT_CHALLENGE_MARKERS: Tuple[str, ...] = (
 # what no interstitial and no browser error page is. Vrbo's own asset and
 # media hosts. This is the signal that answers correctly for Chromium's own
 # network-error page, which carries `<title>www.vrbo.com</title>` and would
-# pass a title check (§18).
+# pass a title check.
 _ASSET_MARKER = re.compile(
     r"c\.travel-assets\.com|a\.travel-assets\.com|media\.vrbo\.com"
     r"|b\.travel-assets\.com", re.I)
 # Three, not one, and the threshold is checked AFTER the unambiguous positive
-# signals below rather than before them (§17's classification-order trap): a
+# signals below rather than before them (the classification-order trap): a
 # leanly-built real page must not come back `blocked`. Measured: 40+ matches
 # on every served page, and — the case that matters — the challenge page
 # scores 12, because it is built out of travel-assets too. So this threshold
@@ -654,7 +654,7 @@ def detect_bot_challenge(html: str, url: str = "") -> Optional[str]:
 # The first guess at this list was invented ("No properties found", "0
 # properties") and matched none of them. A marker set written from
 # imagination is how an empty page comes back as `shell` and spends a
-# 25-second readiness wait on an answer the site had already given (§18).
+# 25-second readiness wait on an answer the site had already given.
 #
 # Matched on a fragment rather than the whole sentence so a copy tweak does
 # not silently break the state, and apostrophes are normalised because the
@@ -679,7 +679,7 @@ def is_no_results(html: str) -> bool:
 
     Deliberately a POSITIVE signal only. A search page with an empty grid and
     none of this copy is a page still painting, not an empty result — and the
-    two want opposite responses (§18). Getting that backwards would report a
+    two want opposite responses. Getting that backwards would report a
     slow page as an empty catalogue.
     """
     lowered = (html or "").translate(_APOSTROPHES).lower()
@@ -691,7 +691,7 @@ def detect_page_state(html: Optional[str], status: Optional[int] = None,
     """Which of five states this response is.
 
     Ordered by how much each signal PROVES rather than by what is cheap to
-    check (§17). The unambiguous positive — cards in the document — comes
+    check. The unambiguous positive — cards in the document — comes
     first, so a page the site plainly served can never be reported as
     blocked; the challenge handler is checked before the status code because
     it says WHICH vendor, which the status does not; and the asset threshold
@@ -699,7 +699,7 @@ def detect_page_state(html: Optional[str], status: Optional[int] = None,
 
     `status` is positional and second, matching `page_flow.classify`. Two
     engines in a sibling repo called this with `status` as a keyword and both
-    crashed on their first fetch, invisibly to every offline check (§17).
+    crashed on their first fetch, invisibly to every offline check.
     """
     if html is None:
         return "blocked"
@@ -713,7 +713,7 @@ def detect_page_state(html: Optional[str], status: Optional[int] = None,
     # 1b. The same question for the other page kind. A property page has no
     #     cards on it by design, so without this it falls through to `shell`
     #     and an engine waits twenty seconds for a grid that is never coming
-    #     (§17: the auctions-index hole, in this repo's shape). The anchor is
+    #     (the auctions-index hole, in this repo's shape). The anchor is
     #     the page's own title plus one of the blocks only a property page
     #     has, so a challenge page carrying an `h1` cannot pass.
     if listing_kind(url) == "property" and soup.select_one("h1") is not None \
@@ -750,7 +750,7 @@ def detect_page_state(html: Optional[str], status: Optional[int] = None,
     # 7. Served, ours, and the grid is not there yet. A search page's first
     #    response is a shell: the grid arrives over client-side GraphQL, so
     #    this state wants the readiness wait and the scroll, NOT a refetch —
-    #    refetching a shell buys another shell (§18).
+    #    refetching a shell buys another shell.
     return "shell"
 
 
@@ -832,7 +832,7 @@ def _price_block(card) -> Tuple[Optional[float], Optional[str], List[str]]:
 
     Recorded in `price_source` because the two can disagree while a run
     otherwise looks healthy, and a diff between two runs that differ only in
-    which node was readable should say `source_changed`, not `changed` (§8).
+    which node was readable should say `source_changed`, not `changed`.
     """
     block = card.select_one(SELECTORS["card_price"])
     if block is None:
@@ -946,7 +946,7 @@ def _image_url(card) -> Optional[str]:
     gallery is not mounted below the fold — so this column is populated for
     the cards that were on screen and null for the rest. Recognised
     POSITIVELY by the media host, so a future placeholder cannot fill the
-    column with something that is not an image (§4).
+    column with something that is not an image.
     """
     for img in card.select(SELECTORS["card_image"]):
         src = (img.get("src") or "").strip()
@@ -971,7 +971,7 @@ def parse_products(html: str, url: str, page: int = 1,
     `page` is threaded in rather than defaulted, because `position` restarts
     at 1 on every page and a `page` column stuck at 1 makes the pair
     worthless — 60 of 119 rows of a sibling repo's two-page run silently
-    claimed a position another row already held (§18).
+    claimed a position another row already held.
     """
     soup = BeautifulSoup(html or "", "html.parser")
     currency = page_currency_code or page_currency(html or "")
@@ -1009,8 +1009,13 @@ def parse_products(html: str, url: str, page: int = 1,
             price=amount,
             # The page's own ISO code where it states one, never a symbol
             # read off the tile, and null rather than a defaulted "USD" when
-            # neither is available (§4).
-            currency=currency or (currency_in(" ".join(lines), url) if lines else None),
+            # neither is available. Null as well when the card has no price:
+            # a currency describes an amount, and a card the site renders
+            # without one ("does not allow 2-night stays for those dates")
+            # has none for it to describe.
+            currency=(currency or (currency_in(" ".join(lines), url)
+                                   if lines else None))
+            if amount is not None else None,
             rating=rating,
             rating_scale=scale,
             review_count=_review_count(card),
@@ -1047,7 +1052,7 @@ def breadcrumb_category(html: str) -> Optional[str]:
     The only thing either of a detail page's two JSON-LD blocks is good for:
     they are a `BreadcrumbList` and an `FAQPage`, and neither is a `Product`
     — so there is no structured price or currency on this site anywhere, on
-    any page kind. Handles the `itemListElement` shapes §4 lists, including
+    any page kind. Handles the `itemListElement` shapes seen across the family, including
     a final crumb with no `item` (the property itself, which is not a link).
     """
     soup = BeautifulSoup(html or "", "html.parser")
@@ -1119,7 +1124,9 @@ def parse_property_page(html: str, url: str) -> List[Product]:
         sku=sku_from_url(url),
         title=_text(soup.select_one(SELECTORS["detail_title"])) or _meta(soup, "og:title"),
         price=amount,
-        currency=currency or (currency_in(" ".join(seen), url) if seen else None),
+        # Null with no price, as on a listing card.
+        currency=(currency or (currency_in(" ".join(seen), url) if seen else None))
+        if amount is not None else None,
         rating=rating,
         rating_scale=scale,
         review_count=review_count,
