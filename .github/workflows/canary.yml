@@ -9,9 +9,9 @@ name: canary
 # A canary that did not reach the data does not end green. Two jobs:
 #
 #   first-page   No secret. Real Chrome, headful under xvfb, from the bare
-#                runner. Page 1 of a dated search was served to the runner
-#                on 15 of the 20 scheduled runs from 2026-09-25 to
-#                2026-10-15, so this job runs ungated and REQUIRES rows: a
+#                runner. Page 1 yielded rows to the runner on 14 of the 20
+#                scheduled runs from 2026-09-25 to 2026-10-15 (4 blocked, 1
+#                served the site's error page), so this job runs ungated and REQUIRES rows: a
 #                block (exit 3), a page served without its results (exit 5),
 #                zero rows or a parser shortfall is red. One re-run after a
 #                pause is allowed on exit 3, because the refusal here is a
@@ -19,9 +19,10 @@ name: canary
 #
 #   pagination   Needs the VRBO_PROXY secret, and FAILS naming it when the
 #                secret is absent. The page turn's data comes over POST
-#                /graphql, and from the runner's address every turn on those
-#                20 runs was answered HTTP 429 (exit 6, next_page_throttled),
-#                so the walk can only be tested from another exit:
+#                /graphql, and from the runner's address it was answered HTTP
+#                429 on all 13 of those runs that pressed next (exit 6,
+#                next_page_throttled), so the walk can only be tested from
+#                another exit:
 #
 #                    gh secret set VRBO_PROXY --repo 2scraper/vrbo-scraper
 #
@@ -93,7 +94,7 @@ jobs:
           code="${{ steps.run.outputs.exit_code }}"
           case "$code" in
             0) echo "Rows written; checking them next." ;;
-            3) echo "::error::Blocked (exit 3) twice from the runner's address. Nothing was tested today. Page 1 is usually served to a runner (15 of 20 scheduled runs, 2026-09-25 to 10-15); if this repeats, the refusal has changed." ; exit 1 ;;
+            3) echo "::error::Blocked (exit 3) twice from the runner's address. Nothing was tested today. Page 1 usually yields rows to a runner (14 of 20 scheduled runs, 2026-09-25 to 10-15); if this repeats, the refusal has changed." ; exit 1 ;;
             4) echo "::error::Exit 4: the site's own no-results answer for a dated Orlando search, which holds dozens of properties. Read the HTML dump in the artefacts." ; exit 1 ;;
             5) echo "::error::Exit 5: page 1 was not obtained (load failure, a page served without its results such as the site's own error copy, or a grid the parser read as 0 rows). The sidecar is not written on a failed run; the debug dump in the artefacts shows what the browser had." ; exit 1 ;;
             6) echo "::error::Exit 6 on a one-page run: the page was partial. See cards_missing in the sidecar." ; exit 1 ;;
@@ -125,11 +126,11 @@ jobs:
     steps:
       - name: Require the VRBO_PROXY secret
         # Not a skip: a skipped pagination check reads exactly like a passing
-        # one, and from the runner's own address every page turn has been
-        # refused.
+        # one, and from the runner's own address the page turn has been
+        # refused on every scheduled run that pressed next.
         run: |
           if [ -z "$VRBO_PROXY" ]; then
-            echo "::error::The VRBO_PROXY secret is not set, so pagination was NOT tested. From a GitHub runner's address every page turn was answered HTTP 429 (20 of 20 scheduled runs, 2026-09-25 to 10-15). Add a residential exit: gh secret set VRBO_PROXY --repo 2scraper/vrbo-scraper"
+            echo "::error::The VRBO_PROXY secret is not set, so pagination was NOT tested. From a GitHub runner's address the page turn was answered HTTP 429 on all 13 scheduled runs that pressed next (2026-09-25 to 10-15). Add a residential exit: gh secret set VRBO_PROXY --repo 2scraper/vrbo-scraper"
             exit 1
           fi
 

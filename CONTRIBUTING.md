@@ -95,8 +95,9 @@ Then the rest of the presentation, in the order that matters:
    It has two jobs. `first-page` needs no secret: it installs real Chrome,
    runs it headful from the bare runner, and fails unless page 1 yields rows
    that pass `.github/canary_check.py`. `pagination` walks three pages and
-   needs a `VRBO_PROXY` secret, because from a runner's address every page
-   turn's `/graphql` POST was answered HTTP 429; without the secret that job
+   needs a `VRBO_PROXY` secret, because from a runner's address the page
+   turn's `/graphql` POST was answered HTTP 429 on all 13 scheduled runs that
+   pressed next (2026-09-25 to 10-15); without the secret that job
    fails and names it, rather than skipping green.
 2. The repo description, homepage and topics set (see the family notes on
    what those should say).
