@@ -34,7 +34,8 @@ REPO = Path(__file__).resolve().parent.parent
 ENGINE_LIBS = ("playwright", "pyppeteer", "selenium", "webdriver_manager")
 
 CLIS = ["playwright_scraper.py", "puppeteer_scraper.py", "selenium_scraper.py",
-        "scraper_api_client.py", "fingerprint_client.py", "env_config.py"]
+        "scraper_api_client.py", "fingerprint_client.py", "env_config.py",
+        "diff_runs.py"]
 
 SAMPLE_FILES = ("sample_output.json", "sample_output.csv")
 
@@ -77,7 +78,7 @@ CREDENTIAL_ALLOWED = (
     # pasted while debugging. An allowlist entry would have switched the
     # check off exactly there. A sibling repo's copy of this script FAILED ON
     # ITS OWN MAIN for the opposite reason: its fixtures were neither
-    # allowlisted nor written this way (§17).
+    # allowlisted nor written this way.
     "{login}", "{user}", "password}@", "***", "u:p@h",
     "login:password@host:port",     # the shape a refusal message prints
     "user:secret@",                 # the proxy-pool masking fixtures
@@ -102,7 +103,18 @@ HEX32 = re.compile(r"\b[0-9a-f]{32}\b")
 HEX32_ALLOWED = ("sha", "hash", "nonce", "example", "md5", "digest",
                  "checksum")
 
-SCANNED_SUFFIXES = (".py", ".md", ".txt", ".yml", ".yaml", ".example")
+# `.json`, `.csv` and `.html` too: the committed fixtures and samples are
+# cut from real captures, and a key pasted into one of those is exactly as
+# public as one pasted into a script.
+SCANNED_SUFFIXES = (".py", ".md", ".txt", ".yml", ".yaml", ".example",
+                    ".json", ".csv", ".html")
+
+# Directory names skipped wherever they sit INSIDE the repository. Matched
+# against the path relative to the repository root, never the absolute
+# path: a clone that happens to live under a directory called `venv` (or
+# `.git`) used to match on that parent, skip every file and report "0 files
+# scanned" as a pass.
+SKIPPED_DIRS = {".git", "__pycache__", ".venv", "venv"}
 
 
 # A directory holding `pyvenv.cfg` is a virtualenv, whatever it is called.
@@ -113,7 +125,7 @@ SCANNED_SUFFIXES = (".py", ".md", ".txt", ".yml", ".yaml", ".example")
 # into pip's vendored code and flags a 32-hex string in `_elffile.py` as
 # key-shaped. Correct about the string, wrong about the file — and it is the
 # FIRST thing a new user sees from `python3 smoke_test.py`. A guard people
-# have to argue with is one they learn to suppress (CLAUDE.md §22).
+# have to argue with is one they learn to suppress.
 #
 # Deliberately NOT a narrowing of what gets scanned: an untracked file is
 # still read, because a key pasted into a scratch file beside the scripts is
@@ -144,8 +156,7 @@ def scanned_files():
     for path in sorted(REPO.rglob("*")):
         if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
             continue
-        if any(part in {".git", "__pycache__", ".venv", "venv"}
-               for part in path.parts):
+        if any(part in SKIPPED_DIRS for part in path.relative_to(REPO).parts):
             continue
         if _is_in_virtualenv(path):
             continue
@@ -237,6 +248,11 @@ def secret_check():
                 failed.append(f"{rel}:{lineno} contains {match[:6]}… — a "
                               f"32-char hex string, the shape of a 2captcha key")
 
+    if not scanned:
+        # Nothing read is not "nothing found". A scan that skips the whole
+        # tree must not be able to report a pass.
+        failed.append(f"0 files scanned under {REPO} — the scan read nothing, "
+                      f"so it cannot say the tree is clean")
     if not failed:
         print(f"ok       {scanned} files scanned, nothing credential-shaped")
     return failed

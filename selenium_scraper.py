@@ -139,10 +139,13 @@ class PageOutcome:
     total_is_floor: bool = False
     gap: Optional[int] = None
     scroll: Optional[dict] = None
+    # Served but not obtained; see playwright_scraper.PageOutcome.
+    unobtained: Optional[str] = None
 
     @property
     def ok(self) -> bool:
-        return not self.load_failed and self.blocked_by is None
+        return (not self.load_failed and self.blocked_by is None
+                and self.unobtained is None)
 
 
 class _Session:
@@ -265,7 +268,7 @@ class _Session:
 # Only "how to ask this driver" lives here. Note the JS dialect: Selenium's
 # execute_script runs a function BODY and needs an explicit `return`, unlike
 # the `() => expr` both other engines take — which is exactly why page_flow
-# names operations instead of passing JavaScript across the boundary (§1).
+# names operations instead of passing JavaScript across the boundary.
 def _count(session, selector: str) -> int:
     try:
         return len(session.driver.find_elements(By.CSS_SELECTOR, selector))
@@ -372,7 +375,7 @@ def _current_url(session) -> str:
 
 def _classify(session, html: str, status=None) -> str:
     # `status` is POSITIONAL and second. Two engines in a sibling repo passed
-    # it as a keyword and both crashed on their first fetch (§17); this
+    # it as a keyword and both crashed on their first fetch; this
     # repo's smoke suite binds every shared-module call in every engine
     # against the callee's real signature for that reason.
     return page_flow.classify(html, status, _current_url(session))
@@ -385,7 +388,7 @@ def _parse_for_mode(html: str, url: str, args, page_num: int = 1) -> List:
                           page_currency_code=page_currency(html))
 
 
-def handle_captcha_if_present(session, args) -> bool:
+def handle_captcha_if_present(session, args, *, budget) -> bool:
     """Detect and solve a challenge. True if something was solved.
 
     Same contract and same reconciliation as the Playwright engine, including
@@ -423,6 +426,12 @@ def handle_captcha_if_present(session, args) -> bool:
     if not args.twocaptcha_key:
         logger.warning("No 2captcha API key, so this challenge cannot be "
                        "solved — continuing with whatever the page holds.")
+        return False
+    # `budget` is the page's page_flow.SolveBudget, shared by every call
+    # site for this page and asked immediately before the purchase.
+    if not budget.spend():
+        logger.warning("This page's solve allowance (%d) is used up — not "
+                       "buying another.", budget.limit)
         return False
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
@@ -481,16 +490,22 @@ def _fetch_one_page(session, args, pool, page_num: int,
     block_retries = 0 if not page_flow.RETRY_ON_BLOCKED else (
         args.proxy_block_retries if has_pool
         else page_flow.BLOCK_RETRIES_WITHOUT_POOL)
-    solves_bought = 0
+    # One allowance for the whole page, shared by both solve call sites and
+    # never reset by a retry or a rotation.
+    budget = page_flow.SolveBudget()
     html, state, load_failed = None, "ok", False
+    status = None
 
     for block_attempt in range(block_retries + 1):
         load_failed = False
+        status = None
 
         if url is not None:
             logger.info("Fetching page %d/%d: %s", page_num, args.pages, url)
             for attempt in range(1, args.retries + 1):
                 try:
+                    # WebDriver exposes no HTTP status, so `status` stays
+                    # None here and the classifier decides on the body.
                     session.driver.get(url)
                     load_failed = False
                     break
@@ -540,11 +555,12 @@ def _fetch_one_page(session, args, pool, page_num: int,
         if load_failed:
             break
 
-        if handle_captcha_if_present(session, args):
+        if handle_captcha_if_present(session, args, budget=budget):
             _sleep(1000)
+            status = None  # the reload replaced the response it described
 
         html = _content(session) or ""
-        state = _classify(session, html)
+        state = _classify(session, html, status)
 
         if page_flow.is_unpainted(state, html):
             wait_timeout = page_flow.content_timeout_ms(args.mode)
@@ -556,15 +572,14 @@ def _fetch_one_page(session, args, pool, page_num: int,
                 lambda sel: _count(session, sel), _sleep,
                 _ready_selector(args), _min_matches(args, html), wait_timeout)
             html = _content(session) or html
-            state = _classify(session, html)
+            state = _classify(session, html, status)
 
-        if (page_flow.should_solve(state)
-                and solves_bought < page_flow.SOLVES_PER_PAGE):
-            solves_bought += 1
-            if handle_captcha_if_present(session, args):
+        if page_flow.should_solve(state) and budget.remaining():
+            if handle_captcha_if_present(session, args, budget=budget):
                 _sleep(1000)
+                status = None
                 html = _content(session) or html
-                state = _classify(session, html)
+                state = _classify(session, html, status)
                 if state == "content":
                     logger.info("The solve was accepted — page %d is content "
                                 "now.", page_num)
@@ -627,7 +642,9 @@ def _fetch_one_page(session, args, pool, page_num: int,
         logger.error("%s", page_flow.block_advice(
             html, headless=bool(getattr(args, "headless", False)),
             has_pool=has_pool))
-        outcome.blocked_by = vendor or ("no-response" if not html else "bot-or-not")
+        outcome.blocked_by = vendor or (
+            "no-response" if not html
+            else f"http_{status}" if status and status != 429 else "bot-or-not")
         outcome.final_url = _current_url(session)
         return outcome
 
@@ -640,12 +657,17 @@ def _fetch_one_page(session, args, pool, page_num: int,
         _sleep(500)
         if found < threshold and args.mode == "listing":
             logger.info("No property cards appeared within %.0fs. If this "
-                        "search genuinely matches nothing, that is the "
-                        "expected answer and the run will report 0 rows "
-                        "(exit 4).", content_timeout / 1000)
+                        "search genuinely matches nothing the site prints "
+                        "its own no-results copy and the run reports exit 4; "
+                        "without that copy the page was not obtained "
+                        "(exit 5, or 6 after earlier pages).",
+                        content_timeout / 1000)
         if args.mode == "listing":
             outcome.scroll = _scroll_the_grid(session, args, html, page_num)
         html = _content(session) or html
+        # Re-read what the page is NOW; the final decision is taken on it.
+        state = _classify(session, html, status)
+        outcome.state = state
 
     if args.dump_html:
         dump_path = (args.dump_html if args.pages == 1
@@ -655,8 +677,16 @@ def _fetch_one_page(session, args, pool, page_num: int,
         logger.info("Saved the snapshot the parser sees to %s (%d bytes).",
                     dump_path, len(html or ""))
 
-    products = _parse_for_mode(html or "", _current_url(session), args, page_num)
+    products = (_parse_for_mode(html or "", _current_url(session), args,
+                                page_num)
+                if page_flow.should_parse(state) else [])
     logger.info("Parsed %d row(s) from page %d.", len(products), page_num)
+    outcome.unobtained = page_flow.unobtained_reason(state, len(products))
+    if outcome.unobtained:
+        logger.error(
+            "Page %d was served but its content was not obtained (%s, state "
+            "%s). This is NOT an empty result: nothing can be concluded about "
+            "the catalogue from it.", page_num, outcome.unobtained, state)
 
     if args.mode == "listing":
         rng = results_range(html or "")
@@ -731,8 +761,7 @@ def scrape(args) -> int:
         outcomes.append(first)
 
         if not first.ok:
-            stop_reason = ("page_load_timeout" if first.load_failed
-                           else f"blocked_{first.blocked_by}")
+            stop_reason = page_flow.failure_stop_reason(first)
             blocked = first.blocked_by is not None
         elif args.mode == "property":
             pass
@@ -765,8 +794,7 @@ def scrape(args) -> int:
                     outcomes.pop()
                     break
                 if not outcome.ok:
-                    stop_reason = ("page_load_timeout" if outcome.load_failed
-                                   else f"blocked_{outcome.blocked_by}")
+                    stop_reason = page_flow.failure_stop_reason(outcome)
                     blocked = outcome.blocked_by is not None
                     break
 
@@ -862,25 +890,28 @@ def parse_args():
                         "listing only.")
     p.add_argument("--category", default=None,
                    help="Label to tag output rows with.")
-    p.add_argument("--pages", type=int, default=1,
+    p.add_argument("--pages", type=page_flow.at_least(1), default=1,
                    help=f"Number of listing pages to walk (default 1, cap "
                         f"{PAGE_CAP}). Each page past the first is reached by "
                         f"PRESSING the site's own next button — this listing "
                         f"has no per-page address.")
-    p.add_argument("--delay", type=float, default=5.0,
+    p.add_argument("--delay", type=page_flow.at_least(0, float), default=5.0,
                    help="Delay between pages, seconds (default 5.0). The data "
                         "behind a page turn is rate limited separately from "
                         "the HTML, so this is the lever that matters.")
-    p.add_argument("--concurrency", type=int, default=1, metavar="N",
+    p.add_argument("--concurrency", type=page_flow.at_least(1), default=1,
+                   metavar="N",
                    help="Accepted for family compatibility and REFUSED above "
                         "1: a Vrbo listing has no per-page address, so there "
                         "is nothing to hand a second worker.")
     p.add_argument("--retries", type=page_flow.attempts_arg, default=3,
                    help="Attempts per page load before giving up (default 3).")
-    p.add_argument("--retry-delay", type=float, default=2.0,
+    p.add_argument("--retry-delay", type=page_flow.at_least(0, float),
+                   default=2.0,
                    help="Seconds before the first page-load retry, doubling "
                         "thereafter (default 2.0)")
-    p.add_argument("--block-retry-delay", type=float, default=None,
+    p.add_argument("--block-retry-delay", type=page_flow.at_least(0, float),
+                   default=None,
                    metavar="SECONDS",
                    help="Wait before re-fetching a page that came back "
                         "REFUSED (HTTP 429 / challenge), doubling on each "
@@ -910,7 +941,8 @@ def parse_args():
                         "current browser session.")
     p.add_argument("--proxy-shuffle", action="store_true",
                    help="Shuffle the pool at startup.")
-    p.add_argument("--proxy-block-retries", type=int, default=2,
+    p.add_argument("--proxy-block-retries", type=page_flow.at_least(0),
+                   default=2,
                    help="Retries from other exits when a page is refused.")
     p.add_argument("--twocaptcha-key", default=None, help="2captcha.com API key")
     p.add_argument("--allow-empty", action="store_true",

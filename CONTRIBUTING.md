@@ -51,7 +51,8 @@ preference, it is the only one. Every anchor is one of Vrbo's own
 
 1. **The card.** `[data-stid="lodging-card-responsive"]`, and the property
    link inside it, `a[data-stid="open-product-information"]`. If either
-   moves the run reports 0 rows and exit 4, which is loud.
+   moves the page reads as served without results and the run exits 5,
+   which is loud.
 2. **The price container, which has two spellings.**
    `data-stid="product-price-summary"` on vrbo.com and
    `data-test-id="price-summary"` on the local storefronts. A third
@@ -90,15 +91,14 @@ history needs a decision, not a red check on every push.
 
 Then the rest of the presentation, in the order that matters:
 
-1. `python3 smoke_test.py` green, and the canary dispatched at least once —
-   including its WARNING branch, which is what runs when a bare GitHub
-   runner's datacentre address is refused and no `VRBO_PROXY` secret is set.
-   Unlike most sibling repos in this family, this canary needs no secret to
-   try: it installs real Chrome and runs it headful. What decides access
-   here is how the exit ADDRESS is scored, and whether a runner's datacentre
-   address is served has not been measured, which is exactly why a block there is
-   a warning rather than a failure — until you set `VRBO_PROXY`, after which
-   it is a failure, because then it means something.
+1. `python3 smoke_test.py` green, and the canary dispatched at least once.
+   It has two jobs. `first-page` needs no secret: it installs real Chrome,
+   runs it headful from the bare runner, and fails unless page 1 yields rows
+   that pass `.github/canary_check.py`. `pagination` walks three pages and
+   needs a `VRBO_PROXY` secret, because from a runner's address the page
+   turn's `/graphql` POST was answered HTTP 429 on all 13 scheduled runs that
+   pressed next (2026-09-25 to 10-15); without the secret that job
+   fails and names it, rather than skipping green.
 2. The repo description, homepage and topics set (see the family notes on
    what those should say).
 3. Only then the row in the org profile README — and check it with an
@@ -142,7 +142,9 @@ silently regress:
 - **A run that finds nothing writes nothing.** It must not replace a good output
   file with `[]`. `--allow-empty` is the opt-out.
 - **Exit codes are a contract**, not decoration: `0` ok, `1` crash, `2` bad
-  usage, `3` blocked, `4` zero rows, `5` remote API error, `6` partial. A
+  usage, `3` blocked, `4` zero rows (the site's own no-results answer), `5`
+  content not obtained (timeout, dead proxy, remote API error, a page served
+  without its results, or a grid the parser read as 0 rows), `6` partial. A
   pipeline branches on these.
 - **An EMPTY page is never retried and never counted as blocked.** One page
   past the end of a listing has no lots, and a no-results search has none of

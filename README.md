@@ -193,7 +193,15 @@ quoted, so a `True` would be an inference dressed as a reading).
 ### Exit codes
 
 `0` ok · `1` crash · `2` bad usage · `3` blocked · `4` zero results ·
-`5` remote API error · `6` partial
+`5` content not obtained · `6` partial
+
+`3` covers the site's "Bot or Not?" refusal and a challenge still on the page
+after the allowed solve and retries. `4` is only the site's own "no results"
+answer. `5` means nothing can be said about the catalogue: a navigation
+timeout, a dead proxy, a remote API error, a page the site served without
+its results (its own "Sorry, we're having a problem on our end" copy, for
+one), or a grid on the page that the parser read as 0 rows. `6` means rows
+were written but a later page failed in one of those ways.
 
 A run that finds nothing **writes nothing**, so a failure cannot overwrite
 last night's good output. `--allow-empty` is the opt-out.

@@ -172,7 +172,7 @@ def test_numbers_and_prices():
     ok &= check("-16% $250 -> 250", price_in("-16% $250") == 250.0)
     ok &= check("-%10,34 ₺ ignored for a $ price", price_in("-%10,34 $25.999") == 25999.0)
 
-    group("Currency, in §4's order of trust")
+    group("Currency, in order of trust")
     # 1. The page's own ISO code is a FACT.
     ok &= check("page states USD", page_currency(fixture("LISTING_US")) == "USD")
     ok &= check("page states EUR", page_currency(fixture("LISTING_DE")) == "EUR")
@@ -198,7 +198,7 @@ def test_numbers_and_prices():
 
 
 def test_values_on_real_fixtures():
-    group("VALUES on real fixtures, not coverage (§10)")
+    group("VALUES on real fixtures, not coverage")
     ok = True
     us = by_sku("LISTING_US")
     ok &= check("LISTING_US parses 4 cards", len(us) == 4)
@@ -227,7 +227,7 @@ def test_values_on_real_fixtures():
                 b is not None and b.sku == "2430840"
                 and b.expedia_property_id == "70477069")
 
-    group("The German storefront — the second-locale checks (§15)")
+    group("The German storefront — the second-locale checks")
     de = by_sku("LISTING_DE")
     ok &= check("LISTING_DE parses 4 cards", len(de) == 4)
     d = de.get("2666640")
@@ -274,6 +274,21 @@ def test_values_on_real_fixtures():
     # the property rather than a parsing failure.
     ok &= check("a card with no reviews has rating None, not 0",
                 de["5813635"].rating is None and de["5813635"].review_count is None)
+
+    group("A card the site renders without a price (real capture)")
+    unpriced = parse_products(FIXTURES["LISTING_UNPRICED"], URLS["LISTING_UNPRICED"])
+    ok &= check("one row, identified and titled",
+                len(unpriced) == 1 and unpriced[0].sku == "12245666ha"
+                and unpriced[0].title == "1 Full Bed | ADA/RI Shower")
+    ok &= check("no price, and therefore no currency or price_source",
+                unpriced[0].price is None and unpriced[0].currency is None
+                and unpriced[0].price_source is None)
+    ok &= check("the rest of the card still reads (rating 10 of 10, 5 reviews)",
+                unpriced[0].rating == 10.0 and unpriced[0].rating_scale == 10.0
+                and unpriced[0].review_count == 5)
+    ok &= check("a priced card keeps its currency",
+                all(r.currency == "USD" for r in rows_of("LISTING_US")
+                    if r.price is not None))
 
     group("The property page")
     prop = parse_property_page(fixture("PROPERTY_US"), URLS["PROPERTY_US"])
@@ -374,7 +389,7 @@ def test_pagination():
                 "next-button" in NEXT_PAGE_SELECTOR
                 and ":not([disabled])" in NEXT_PAGE_SELECTOR)
 
-    group("Concurrency is refused WITH the reason (§18)")
+    group("Concurrency is refused WITH the reason")
     refusal = page_flow.concurrency_refusal("https://www.vrbo.com/search?destination=X")
     ok &= check("refused for a search", refusal is not None)
     ok &= check("the reason names the cause, not just 'unsupported'",
@@ -384,7 +399,7 @@ def test_pagination():
     ok &= check("concurrency_limit is 1 everywhere",
                 page_flow.concurrency_limit("https://www.vrbo.com/search?d=X") == 1)
 
-    group("The counter is the completeness oracle (§8)")
+    group("The counter is the completeness oracle")
     us = results_range(fixture("LISTING_US"))
     ok &= check("'1 - 50 of 300+' parses", (us.first, us.last, us.total) == (1, 50, 300))
     ok &= check("the '+' is recorded as a floor", us.total_is_floor is True)
@@ -430,7 +445,7 @@ def test_page_state():
                 detect_page_state(fixture("BLOCK_429"), 429, URLS["BLOCK_429"]) == "blocked")
     # Chromium's own answer when a proxy is dead: 39 bytes, no markup, and
     # nothing a vendor-marker list would recognise. Only "was this built out
-    # of the site's own assets?" answers correctly (§18).
+    # of the site's own assets?" answers correctly.
     ok &= check("a browser error page is blocked, not content",
                 detect_page_state(fixture("BROWSER_ERROR"), None,
                                   URLS["BROWSER_ERROR"]) == "blocked")
@@ -451,13 +466,13 @@ def test_page_state():
     group("The asset threshold is never asked to tell a block from a page")
     # It cannot: the challenge handler is built out of travel-assets too. The
     # unambiguous positives are checked first, which is what keeps a leanly
-    # built real page from coming back blocked (§17's ordering trap).
+    # built real page from coming back blocked (the ordering trap).
     ok &= check("a served grid references the site's assets",
                 served_by_vrbo(fixture("LISTING_US")))
     ok &= check("the browser error page does not",
                 not served_by_vrbo(fixture("BROWSER_ERROR")))
 
-    group("`akamai` is NOT a marker here, and that is the point (§18)")
+    group("`akamai` is NOT a marker here, and that is the point")
     # Vrbo IS fronted by Akamai and every good page loads its sensor, so a
     # marker list containing `akamai` would match an 899 KB page holding the
     # full grid.
@@ -470,7 +485,7 @@ def test_page_state():
 
 
 def test_challenge_is_not_always_solvable():
-    group("detected != blocking != paying (§8)")
+    group("detected != blocking != paying")
     ok = True
     block = fixture("BLOCK_429")
     # Expedia's handler is a multiplexer that states its pick in the page's
@@ -581,7 +596,7 @@ def test_page_flow_policy():
                 page_flow.should_parse("nonsense") is False)
 
     group("Retrying a block DOES help here — and the engines CONSULT that")
-    # A policy constant nothing reads is the same defect as dead code (§17).
+    # A policy constant nothing reads is the same defect as dead code.
     ok &= check("RETRY_ON_BLOCKED is True on this site",
                 page_flow.RETRY_ON_BLOCKED is True)
     ok &= check("the budget is non-zero", page_flow.BLOCK_RETRIES_WITHOUT_POOL > 0)
@@ -594,7 +609,7 @@ def test_page_flow_policy():
     ok &= check("every engine reads RETRY_ON_BLOCKED", all(consulted))
 
     group("Readiness — a count poll, never an evaluated string")
-    ok &= check("MIN_CARD_MATCHES is above 1 (§5)", page_flow.MIN_CARD_MATCHES > 1)
+    ok &= check("MIN_CARD_MATCHES is above 1", page_flow.MIN_CARD_MATCHES > 1)
     ok &= check("the listing anchor is the card itself",
                 page_flow.ready_selector("listing") == SELECTORS["item_card"])
     ok &= check("a property page waits on its price block, not its title",
@@ -621,7 +636,7 @@ def test_page_flow_policy():
 
 
 def test_scroll_loop():
-    group("The scroll — the inner container, and THREE stable rounds (§8)")
+    group("The scroll — the inner container, and THREE stable rounds")
     ok = True
     # The window scroll is a no-op on this site and looks exactly like a
     # working one, which is why the container is named in SELECTORS and every
@@ -764,7 +779,7 @@ def test_throttle_is_not_completion():
 
 
 def test_output_contract():
-    group("The output contract (§9)")
+    group("The output contract")
     ok = True
     names = [f.name for f in fields(Product)]
     # The family prefix, in the family's order. Four columns are deliberately
@@ -995,7 +1010,7 @@ def test_env_config():
     ok &= check("every .env.example name is read by the code",
                 documented <= set(env_config.ENV_KEYS))
 
-    group("A COPIED .env.example must read as unset (§17)")
+    group("A COPIED .env.example must read as unset")
     # `cp .env.example .env` followed by a run used to connect with the
     # literal string `{login}-zone-...` as a username and get a 401 — the
     # confusing auth error a long way from its cause that this rule exists to
@@ -1013,7 +1028,7 @@ def test_env_config():
                 # documents them, so a literal-only placeholder list misses
                 # both — `cp .env.example .env` then connected with the
                 # string `{login}-zone-...` as a username and got a 401 a
-                # long way from its cause (§17).
+                # long way from its cause.
                 for name in ("TWOCAPTCHA_KEY", "VRBO_CDP_ENDPOINT",
                              "VRBO_PROXY"):
                     ok &= check(f"{name} from a copied example reads as unset",
@@ -1057,7 +1072,7 @@ def test_proxy_pool():
 
 
 def test_credentials_never_reach_a_log():
-    group("An EXCEPTION MESSAGE is a log (§8)")
+    group("An EXCEPTION MESSAGE is a log")
     ok = True
     secret = "hunter2"
     # Concatenated rather than interpolated, so no line in this file holds a
@@ -1094,14 +1109,14 @@ def test_credentials_never_reach_a_log():
 
 
 def test_engine_parity(skips):
-    group("The three engines agree — flags, in BOTH directions (§17)")
+    group("The three engines agree — flags, in BOTH directions")
     ok = True
     flagsets = {}
     for engine in ENGINES:
         src = open(os.path.join(REPO_ROOT, f"{engine}.py"), encoding="utf-8").read()
         flagsets[engine] = set(re.findall(r'p\.add_argument\("(--[a-z0-9-]+)"', src))
 
-    # The family contract (§9). Every engine must carry all of these.
+    # The family contract. Every engine must carry all of these.
     contract = {"--url", "--pages", "--category", "--format", "--out", "--delay",
                 "--retries", "--retry-delay", "--concurrency", "--proxy",
                 "--proxy-file", "--proxy-rotate", "--proxy-shuffle",
@@ -1135,7 +1150,7 @@ def test_engine_parity(skips):
         ok &= check(f"{engine}'s extra flags are exactly the documented set",
                     actual == extra)
 
-    group("Every shared-module call binds against the real signature (§17)")
+    group("Every shared-module call binds against the real signature")
     problems = []
     for engine in ENGINES:
         path = os.path.join(REPO_ROOT, f"{engine}.py")
@@ -1174,7 +1189,7 @@ def test_engine_parity(skips):
     ok &= check(f"no call site disagrees with its callee "
                 f"{'' if not problems else problems[:3]}", not problems)
 
-    group("Every engine imports its driver at MODULE level (§10)")
+    group("Every engine imports its driver at MODULE level")
     # Without this the module imports cleanly with no driver installed, the
     # skip below never fires, and CI's engine-smoke job cannot notice a
     # broken import.
@@ -1229,7 +1244,7 @@ def test_engine_parity(skips):
 
 
 def test_no_undefined_names():
-    group("Names that resolve, not just parse (§10)")
+    group("Names that resolve, not just parse")
     # `compileall` proves a file PARSES, not that its names RESOLVE. A live
     # run of a sibling repo's engine died with NameError on a line reached
     # only while fetching, after an import had been removed — invisible to
@@ -1284,7 +1299,7 @@ def _undefined_names(path):
 
 
 def test_dockerfile_matches_its_entrypoint():
-    group("The Dockerfile COPY list against the import graph (§10)")
+    group("The Dockerfile COPY list against the import graph")
     # All three repos in this family once shipped an image that died with
     # ModuleNotFoundError on every invocation, --help included, because one
     # module was missing from an explicit COPY list. This check needs no
@@ -1341,7 +1356,7 @@ def test_dockerfile_matches_its_entrypoint():
 
 
 def test_wording():
-    group("Wording enforced by a test (§12)")
+    group("Wording enforced by a test")
     ok = True
     banned = {
         "cloud browser": "Scraping Browser API",
@@ -1374,7 +1389,7 @@ def test_wording():
 
 
 def test_no_capture_leaks():
-    group("Committed fixtures carry no credential-shaped material (§10)")
+    group("Committed fixtures carry no credential-shaped material")
     ok = True
     text = open(_FIXTURE_PATH, encoding="utf-8").read()
     # PATTERNS, not the literals one capture happened to contain, so the next
@@ -1395,7 +1410,7 @@ def test_no_capture_leaks():
 
 
 def test_ci_checks_is_wired_up():
-    group("One credential check, invoked from CI and from here (§17)")
+    group("One credential check, invoked from CI and from here")
     ok = True
     script = os.path.join(REPO_ROOT, ".github", "ci_checks.py")
     ok &= check("ci_checks.py exists", os.path.exists(script))
@@ -1415,6 +1430,64 @@ def test_ci_checks_is_wired_up():
         ok &= check(f"ci_checks.py passes on this repo "
                     f"{'' if result.returncode == 0 else result.stdout[-300:]}",
                     result.returncode == 0)
+        ok &= _scan_is_relative_to_the_repo(script)
+    return ok
+
+
+def _scan_is_relative_to_the_repo(script):
+    """The scan must not depend on where the clone lives.
+
+    It used to test the ABSOLUTE path's parts against `venv`/`.venv`, so a
+    clone under any directory with one of those names skipped every file,
+    printed "0 files scanned" and passed with a key planted in the tree.
+    """
+    import shutil
+    import subprocess
+    ok = True
+    # Built at run time so no line of this file is key-shaped itself.
+    planted = "".join("ab" for _ in range(16))
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = os.path.join(tmp, "venv", "vrbo-scraper")
+        os.makedirs(os.path.join(clone, ".github"))
+        shutil.copy(script, os.path.join(clone, ".github", "ci_checks.py"))
+        copied = os.path.join(clone, ".github", "ci_checks.py")
+
+        def scan():
+            return subprocess.run([sys.executable, copied, "--secret-check"],
+                                  cwd=clone, capture_output=True, text=True)
+
+        # A real virtualenv INSIDE the clone is still skipped, by its
+        # pyvenv.cfg rather than by its name.
+        env = os.path.join(clone, "myenv")
+        os.makedirs(os.path.join(env, "lib"))
+        open(os.path.join(env, "pyvenv.cfg"), "w").close()
+        with open(os.path.join(env, "lib", "vendored.py"), "w") as f:
+            f.write(f"X = '{planted}'\n")
+        result = scan()
+        ok &= check("a clone under a parent named venv scans its files, and a "
+                    "nested real venv is skipped",
+                    result.returncode == 0 and " 0 files" not in result.stdout)
+        with open(os.path.join(clone, "note.txt"), "w") as f:
+            f.write(f"TWOCAPTCHA_KEY={planted}\n")
+        result = scan()
+        ok &= check("...and a key planted there FAILS the scan",
+                    result.returncode != 0 and "note.txt" in result.stdout)
+        os.remove(os.path.join(clone, "note.txt"))
+        with open(os.path.join(clone, "fixture.json"), "w") as f:
+            f.write(json.dumps({"html": f"key={planted}"}))
+        result = scan()
+        ok &= check("a key inside a JSON fixture FAILS the scan",
+                    result.returncode != 0 and "fixture.json" in result.stdout)
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_ci_checks_copy", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.scanned_files = lambda: iter(())
+    with contextlib.redirect_stdout(io.StringIO()):
+        failures = module.secret_check()
+    ok &= check("a scan that read 0 files is a failure, not a pass",
+                bool(failures))
     return ok
 
 
@@ -1463,7 +1536,8 @@ def test_required_files_are_committed():
                 "sample_output.csv", ".env.example", "README.md",
                 "CHANGELOG.md", "Dockerfile", "requirements.txt",
                 ".github/ci_checks.py", ".github/workflows/tests.yml",
-                ".github/workflows/canary.yml", "tests/test_smoke.py")
+                ".github/workflows/canary.yml", ".github/canary_check.py",
+                "tests/test_smoke.py")
     result = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT,
                             capture_output=True, text=True)
     if result.returncode != 0:
@@ -1505,7 +1579,7 @@ def test_readme_claims():
 
 # The floor the README and CHANGELOG state. A FLOOR rather than the exact
 # count, because an exact count goes stale the next time anyone adds a check
-# and a stale number in a README is worse than no number (§17). Raise it when
+# and a stale number in a README is worse than no number. Raise it when
 # it is comfortably passed; it can only ever be an under-claim.
 CLAIMED_CHECK_FLOOR = 450
 
@@ -1599,6 +1673,454 @@ def test_scraper_api_waitfor_is_an_object():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# The engines' fetch loop, driven through a FAKE driver
+# ---------------------------------------------------------------------------
+# The three `_fetch_one_page` copies decide what a page cost and what a run
+# reports, and the engine groups above skip whenever a driver library is
+# absent. These checks load a private copy of each engine with stand-in
+# driver modules where the real one is missing, replace every browser
+# primitive with a stub, and run the REAL loop. No network, no solver call:
+# `solve_recaptcha` is replaced by a counter.
+
+_DRIVER_STUBS = {
+    "playwright_scraper": {
+        "playwright": {},
+        "playwright.sync_api": {"sync_playwright": None,
+                                "Error": type("Error", (Exception,), {}),
+                                "TimeoutError": type("TimeoutError", (Exception,), {})},
+    },
+    "puppeteer_scraper": {
+        "pyppeteer": {"launch": None, "connect": None},
+    },
+    "selenium_scraper": {
+        "selenium": {},
+        "selenium.webdriver": {},
+        "selenium.common": {},
+        "selenium.common.exceptions": {
+            "TimeoutException": type("TimeoutException", (Exception,), {}),
+            "WebDriverException": type("WebDriverException", (Exception,), {})},
+        "selenium.webdriver.chrome": {},
+        "selenium.webdriver.chrome.options": {"Options": object},
+        "selenium.webdriver.common": {},
+        "selenium.webdriver.common.by": {
+            "By": type("By", (), {"CSS_SELECTOR": "css selector"})},
+    },
+}
+
+
+def _load_engine_copy(engine):
+    """A private copy of `engine`, importable whether or not its driver is."""
+    import importlib.util
+    import types
+    added = []
+    for modname, attrs in _DRIVER_STUBS[engine].items():
+        try:
+            __import__(modname)
+            continue
+        except ImportError:
+            pass
+        module = types.ModuleType(modname)
+        for k, v in attrs.items():
+            setattr(module, k, v)
+        sys.modules[modname] = module
+        added.append(modname)
+    if "selenium" in added:
+        sys.modules["selenium"].webdriver = sys.modules["selenium.webdriver"]
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"_fake_driver_{engine}", os.path.join(REPO_ROOT, f"{engine}.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for modname in added:
+            sys.modules.pop(modname, None)
+
+
+class _FakeResponse:
+    def __init__(self, status):
+        self.status = status
+
+
+class _FakePage:
+    """Every method the three engines call on a page or a driver."""
+
+    def __init__(self, status):
+        self.status, self.url, self.navigations = status, "https://www.vrbo.com/search?destination=Orlando", 0
+
+    def goto(self, url, *a, **k):
+        self.navigations += 1
+        return _FakeResponse(self.status)
+
+    def get(self, url):                    # selenium driver.get
+        self.navigations += 1
+
+    def evaluate(self, *a, **k):
+        return None
+
+    def execute_script(self, *a, **k):
+        return None
+
+    def reload(self, *a, **k):
+        return None
+
+    def refresh(self):
+        return None
+
+    def wait_for_timeout(self, ms):
+        return None
+
+    def screenshot(self, *a, **k):
+        return None
+
+    def save_screenshot(self, *a, **k):
+        return None
+
+
+class _FakeSession:
+    def __init__(self, status):
+        self.page = self.driver = _FakePage(status)
+        self.bridge = type("Bridge", (), {"run": staticmethod(lambda x: x)})()
+        self.relaunches = 0
+
+    def relaunch(self):
+        self.relaunches += 1
+
+
+class _FakePool:
+    current = "http://exit-1.invalid:1"
+
+    def __len__(self):
+        return 3
+
+    def advance(self, reason=""):
+        pass
+
+    def rotates_per_page(self):
+        return False
+
+
+def _run_fake_page(engine_mod, states, rows=(), status=200, pool=None,
+                   tmp="."):
+    """Run one page through the engine's real `_fetch_one_page`.
+
+    `states` is the sequence `page_flow.classify` answers with (the last one
+    repeats). Returns (outcome, solver purchases, statuses the classifier
+    was given).
+    """
+    import types
+    bought, statuses, answers = [], [], list(states)
+
+    def fake_classify(html, status=None, url=""):
+        statuses.append(status)
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+    # A widget is "on the page" only in the scenarios about challenges.
+    challenge = (types.SimpleNamespace(kind="recaptcha_v2", source="stub",
+                                       sitekey="stub", action=None)
+                 if "challenge" in states else None)
+    patches = {
+        "_count": lambda *a, **k: 0,
+        "_sleep": lambda ms: None,
+        "_content": lambda *a, **k: "<html></html>",
+        "_content_when_settled": lambda *a, **k: "<html></html>",
+        "_current_url": lambda *a, **k: "https://www.vrbo.com/search?destination=Orlando",
+        "_scroll_the_grid": lambda *a, **k: {},
+        "_parse_for_mode": lambda *a, **k: list(rows),
+        "detect_recaptcha_v3": lambda *a, **k: challenge,
+        "detect_recaptcha_in_page": lambda *a, **k: None,
+        "reconcile_detections": lambda *a, **k: challenge,
+        "solve_recaptcha": lambda *a, **k: bought.append(1) or "stub-token",
+        "time": types.SimpleNamespace(sleep=lambda s: None),
+    }
+    saved = {k: getattr(engine_mod, k) for k in patches if hasattr(engine_mod, k)}
+    saved_classify = page_flow.classify
+    for k, v in patches.items():
+        if k in saved:
+            setattr(engine_mod, k, v)
+    page_flow.classify = fake_classify
+    args = types.SimpleNamespace(
+        pages=1, retries=1, retry_delay=0, block_retry_delay=None,
+        proxy_block_retries=2, mode="listing", out=os.path.join(tmp, "fake"),
+        dump_html=None, solve_captcha="when-blocked",
+        twocaptcha_key="stub-never-sent", captcha_api="v2", min_score=0.7,
+        headless=False, delay=0, chromium_path="/stub", cdp_endpoint=None)
+    try:
+        session = _FakeSession(status)
+        outcome = engine_mod._fetch_one_page(
+            session, args, pool, 1, "https://www.vrbo.com/search?destination=Orlando")
+    finally:
+        for k, v in saved.items():
+            setattr(engine_mod, k, v)
+        page_flow.classify = saved_classify
+    return outcome, len(bought), statuses
+
+
+def test_engine_fetch_loop():
+    group("The fetch loop through a fake driver: solves, exits, status")
+    ok = True
+    row = rows_of("LISTING_US")[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        for engine in ENGINES:
+            mod = _load_engine_copy(engine)
+            short = engine.split("_")[0]
+
+            # A page that stays a challenge through every retry: one
+            # purchase per PAGE, never one per attempt, with or without a
+            # pool — and the run is blocked, not empty.
+            for label, pool in (("no pool", None), ("a pool of 3", _FakePool())):
+                outcome, bought, _ = _run_fake_page(mod, ["challenge"], pool=pool, tmp=tmp)
+                ok &= check(f"{short}: an unsolved challenge buys 1 solve with "
+                            f"{label} (bought {bought})",
+                            bought == page_flow.SOLVES_PER_PAGE)
+                ok &= check(f"{short}: an unsolved challenge ends blocked, not "
+                            f"empty ({label})",
+                            outcome.blocked_by is not None and not outcome.ok
+                            and outcome.products == [])
+            reason = page_flow.failure_stop_reason(outcome)
+            code = finish_run([], os.path.join(tmp, f"{short}-ch"), "json",
+                              False, blocked=outcome.blocked_by is not None,
+                              stop_reason=reason, pages_requested=1,
+                              pages_completed=0, start_url="u", final_url="u")
+            ok &= check(f"{short}: ...and the run exits 3 ({reason}, got {code})",
+                        code == EXIT_BLOCKED)
+
+            # Served, never painted, 0 rows: content not obtained.
+            outcome, bought, _ = _run_fake_page(mod, ["shell"], tmp=tmp)
+            ok &= check(f"{short}: a shell that never painted is not ok "
+                        f"({outcome.unobtained})",
+                        not outcome.ok
+                        and outcome.unobtained == "served_without_results"
+                        and bought == 0)
+            reason = page_flow.failure_stop_reason(outcome)
+            code = finish_run([], os.path.join(tmp, f"{short}-sh"), "json",
+                              False, blocked=False, stop_reason=reason,
+                              pages_requested=1, pages_completed=0,
+                              start_url="u", final_url="u")
+            ok &= check(f"{short}: ...and the run exits 5, not 4 (got {code})",
+                        code == EXIT_API_ERROR)
+
+            # The grid is there and the parser lost it: parser failure.
+            outcome, _, _ = _run_fake_page(mod, ["content"], rows=(), tmp=tmp)
+            ok &= check(f"{short}: cards on the page and 0 rows is "
+                        f"parser_found_nothing ({outcome.unobtained})",
+                        outcome.unobtained == "parser_found_nothing"
+                        and not outcome.ok)
+            outcome, _, _ = _run_fake_page(mod, ["content"], rows=(row,), tmp=tmp)
+            ok &= check(f"{short}: cards and rows is ok",
+                        outcome.ok and len(outcome.products) == 1)
+            # The site's own no-results copy stays a genuine empty answer.
+            outcome, _, _ = _run_fake_page(mod, ["empty"], rows=(row,), tmp=tmp)
+            ok &= check(f"{short}: `empty` is ok, unparsed, and still exit 4's case",
+                        outcome.ok and outcome.products == []
+                        and outcome.unobtained is None)
+
+            # The navigation's status reaches the classifier.
+            _, _, statuses = _run_fake_page(mod, ["content"], rows=(row,),
+                                            status=503, tmp=tmp)
+            if engine == "selenium_scraper":
+                ok &= check("selenium: WebDriver has no status, so None is passed",
+                            statuses and statuses[0] is None)
+            else:
+                ok &= check(f"{short}: the goto() status reaches the classifier "
+                            f"({statuses[:1]})", statuses and statuses[0] == 503)
+
+    group("The site's own error copy is not an empty catalogue (real capture)")
+    html, url = FIXTURES["SITE_ERROR"], URLS["SITE_ERROR"]
+    state = detect_page_state(html, None, url)
+    ok &= check(f"it reads as a served shell ({state})", state == "shell")
+    ok &= check("it parses to 0 rows", parse_products(html, url) == [])
+    ok &= check("0 rows from it is served_without_results",
+                page_flow.unobtained_reason(state, 0) == "served_without_results")
+    ok &= check("the no-results copy is still a genuine empty answer",
+                page_flow.unobtained_reason(
+                    detect_page_state(FIXTURES["EMPTY_EN"], 200, URLS["EMPTY_EN"]), 0)
+                is None)
+    ok &= check("a real grid with rows is obtained",
+                page_flow.unobtained_reason("content", 4) is None)
+    return ok
+
+
+def test_numeric_flags_are_validated():
+    group("Counts and waits refuse values that cannot be honoured")
+    ok = True
+    import argparse
+    for flag, kind, minimum, bad, good in (
+            ("--pages", int, 1, "0", "2"), ("--concurrency", int, 1, "0", "1"),
+            ("--proxy-block-retries", int, 0, "-1", "0"),
+            ("--delay", float, 0, "-1", "0"), ("--retry-delay", float, 0, "-0.5", "1.5"),
+            ("--block-retry-delay", float, 0, "-30", "30")):
+        parse = page_flow.at_least(minimum, kind)
+        ok &= check(f"{flag}: {good} is accepted", parse(good) == kind(good))
+        ok &= check(f"{flag}: {bad} is refused",
+                    _raises(lambda: parse(bad)))
+    ok &= check("a NaN delay is refused",
+                _raises(lambda: page_flow.at_least(0, float)("nan")))
+    wired = ('"--pages", type=page_flow.at_least(1)',
+             '"--delay", type=page_flow.at_least(0, float)',
+             '"--concurrency", type=page_flow.at_least(1)',
+             '"--retry-delay", type=page_flow.at_least(0, float)',
+             '"--block-retry-delay", type=page_flow.at_least(0, float)',
+             '"--proxy-block-retries", type=page_flow.at_least(0)')
+    for engine in ENGINES:
+        src = open(os.path.join(REPO_ROOT, f"{engine}.py"), encoding="utf-8").read()
+        missing = [w.split(",")[0] for w in wired if w not in src]
+        ok &= check(f"{engine} validates every count and wait {missing or ''}",
+                    not missing)
+    # And through a real argparse error, which is what a user sees: exit 2
+    # with the flag named.
+    p = argparse.ArgumentParser()
+    p.add_argument("--delay", type=page_flow.at_least(0, float))
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        try:
+            p.parse_args(["--delay", "-1"])
+            code = 0
+        except SystemExit as e:
+            code = e.code
+    ok &= check("argparse exits 2 naming the flag",
+                code == 2 and "--delay" in err.getvalue())
+    api = open(os.path.join(REPO_ROOT, "scraper_api_client.py"), encoding="utf-8").read()
+    ok &= check("scraper_api_client validates --retries and --retry-delay",
+                '"--retries", type=page_flow.at_least(0)' in api
+                and '"--retry-delay", type=page_flow.at_least(0)' in api)
+    return ok
+
+
+def test_output_is_atomic_and_formula_safe():
+    group("Output files are replaced atomically, with a sane mode")
+    ok = True
+    import output_writer
+    rows = rows_of("LISTING_US")
+    with tempfile.TemporaryDirectory() as tmp:
+        prefix = os.path.join(tmp, "out")
+        finish_run(rows, prefix, "both", False, blocked=False,
+                   stop_reason="completed", pages_requested=1,
+                   pages_completed=1, start_url="u", final_url="u")
+        before = {ext: open(prefix + ext, "rb").read()
+                  for ext in (".json", ".csv", ".meta.json")}
+
+        real_dump, real_writer = json.dump, csv_module.DictWriter
+
+        def broken_dump(obj, f, **k):
+            f.write('[{"partial')
+            raise OSError("disk full (injected)")
+
+        class BrokenWriter(real_writer):
+            def writerow(self, row):
+                raise OSError("disk full (injected)")
+
+        output_writer.json.dump = broken_dump
+        try:
+            ok &= check("a failing JSON write raises",
+                        _raises(lambda: output_writer.write_json(rows, prefix + ".json")))
+            ok &= check("a failing sidecar write raises",
+                        _raises(lambda: output_writer.write_run_meta(prefix, {"x": 1})))
+        finally:
+            output_writer.json.dump = real_dump
+        output_writer.csv.DictWriter = BrokenWriter
+        try:
+            ok &= check("a failing CSV write raises",
+                        _raises(lambda: output_writer.write_csv(rows, prefix + ".csv")))
+        finally:
+            output_writer.csv.DictWriter = real_writer
+        for ext, data in before.items():
+            ok &= check(f"...and the previous {ext} is intact",
+                        open(prefix + ext, "rb").read() == data)
+        ok &= check("no temporary file is left behind",
+                    sorted(os.listdir(tmp)) == ["out.csv", "out.json", "out.meta.json"])
+
+        for umask_value, want in ((0o022, 0o644), (0o002, 0o664), (0o077, 0o600)):
+            path = os.path.join(tmp, f"new-{umask_value:o}.json")
+            old = os.umask(umask_value)
+            try:
+                output_writer.write_json(rows, path)
+            finally:
+                os.umask(old)
+            got = os.stat(path).st_mode & 0o777
+            ok &= check(f"a new file under umask {umask_value:03o} is {want:o} "
+                        f"(got {got:o})", got == want)
+        os.chmod(prefix + ".json", 0o640)
+        output_writer.write_json(rows, prefix + ".json")
+        ok &= check("an existing file keeps its mode (640)",
+                    os.stat(prefix + ".json").st_mode & 0o777 == 0o640)
+
+    group("CSV cells cannot run as formulas; JSON is left alone")
+    hostile = Product(sku="1", title="=HYPERLINK(\"http://x\",\"y\")",
+                      location_note="+cmd", badges=["@SUM(A1)", "Premier Host"],
+                      amenities=["Pool", "-x"], price_note="\tlead tab",
+                      property_summary="-", price=-5.0, rating=8.6)
+    with tempfile.TemporaryDirectory() as tmp:
+        prefix = os.path.join(tmp, "f")
+        code = finish_run([hostile], prefix, "both", False, blocked=False,
+                          stop_reason="completed", pages_requested=1,
+                          pages_completed=1, start_url="u", final_url="u",
+                          extra={"results_total": 1})
+        cell = list(csv_module.DictReader(open(prefix + ".csv", newline="")))[0]
+        data = json.load(open(prefix + ".json"))[0]
+        meta = json.load(open(prefix + ".meta.json"))
+        ok &= check("= is escaped", cell["title"].startswith("'="))
+        ok &= check("+ is escaped", cell["location_note"] == "'+cmd")
+        ok &= check("a joined list is escaped on its first element",
+                    cell["badges"].startswith("'@SUM"))
+        ok &= check("a list whose LATER element is formula-shaped is not",
+                    cell["amenities"] == "Pool | -x")
+        ok &= check("a leading tab is escaped", cell["price_note"] == "'\tlead tab")
+        ok &= check("a number stays a number (-5.0)", cell["price"] == "-5.0")
+        ok &= check("JSON keeps the site's bytes",
+                    data["title"].startswith("=") and data["badges"][0] == "@SUM(A1)")
+        ok &= check("the sidecar counts the escaped cells (5)",
+                    meta.get("csv_cells_escaped") == 5 and code == 0)
+        ok &= check("the caller's extra still lands in the sidecar",
+                    meta.get("results_total") == 1)
+        finish_run([hostile], prefix, "both", False, blocked=False,
+                   stop_reason="completed", pages_requested=1,
+                   pages_completed=1, start_url="u", final_url="u",
+                   extra={"csv_cells_escaped": "caller"})
+        meta = json.load(open(prefix + ".meta.json"))
+        ok &= check("the count merges UNDER a caller's extra",
+                    meta.get("csv_cells_escaped") == "caller")
+    return ok
+
+
+def test_no_private_citations():
+    group("Shipped files state their rules instead of citing private notes")
+    # The rules behind this code are written out where they apply. A pointer
+    # to a document the reader cannot open (an internal notes file, or a
+    # bare section number from one) explains nothing, so it may not come
+    # back. The tokens are assembled from pieces so this check does not
+    # match its own source.
+    import subprocess
+    banned = [re.compile(re.escape("CLAUDE" + ".md"), re.I),
+              re.compile(re.escape("claude_" + "2scraper"), re.I),
+              re.compile(re.escape("2scraper_" + "repo_rules"), re.I),
+              re.compile("(?:play" + "book|tem" + "plate) " + chr(0xA7), re.I),
+              re.compile(chr(0xA7) + r"\s*\d")]
+    try:
+        listed = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT,
+                                capture_output=True, text=True, check=True).stdout.split()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        listed = [os.path.relpath(os.path.join(d, f), REPO_ROOT)
+                  for d, _, names in os.walk(REPO_ROOT) if ".git" not in d
+                  for f in names]
+    hits = []
+    for rel in listed:
+        path = os.path.join(REPO_ROOT, rel)
+        if not os.path.isfile(path):
+            continue
+        try:
+            text = open(path, encoding="utf-8").read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if any(b.search(line) for b in banned):
+                hits.append(f"{rel}:{lineno}")
+    ok = check(f"no tracked file cites private notes or section numbers "
+               f"{hits[:5] if hits else ''}", not hits and len(listed) > 10)
+    return ok
+
+
 def main() -> int:
     ok = True
     skips = []
@@ -1631,6 +2153,10 @@ def main() -> int:
     ok &= test_readme_claims()
     ok &= test_x_debug_header_is_redacted()
     ok &= test_scraper_api_waitfor_is_an_object()
+    ok &= test_engine_fetch_loop()
+    ok &= test_numeric_flags_are_validated()
+    ok &= test_output_is_atomic_and_formula_safe()
+    ok &= test_no_private_citations()
 
     passed = _total_checks - len(_failures)
     if passed < CLAIMED_CHECK_FLOOR:

@@ -10,6 +10,76 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+> **Behaviour changes:**
+>
+> - A run that obtained nothing now exits **5**, not 4, when the site served
+>   a page without its results (its own "Sorry, we're having a problem on our
+>   end" copy, or a grid that never painted) or when cards were on the page
+>   and the parser read 0 rows. Exit 4 is kept for the site's own no-results
+>   answer. With rows from earlier pages the same failure gives exit 6.
+> - A challenge still on the page after the allowed solve and retries now
+>   exits **3** (blocked). It used to fall through to the parser and exit 4.
+> - `--pages 0`, `--concurrency 0` and negative `--delay`, `--retry-delay`,
+>   `--block-retry-delay` and `--proxy-block-retries` are refused with a
+>   usage error (exit 2) in all three engines, as are negative `--retries`
+>   and `--retry-delay` in `scraper_api_client.py`.
+> - Output files are replaced atomically. A new file gets the mode `open()`
+>   would give it under your umask; an existing file keeps its own mode.
+> - CSV cells that begin with `=`, `+`, `-`, `@`, a tab, CR or LF are
+>   prefixed with `'` so a spreadsheet reads them as text. The JSON output is
+>   unchanged; the sidecar records the count as `csv_cells_escaped`.
+
+### Fixed
+
+- **A paid solve could be bought several times for one page.** The solve
+  before classification was not counted, and it ran again on every block
+  retry, so a page that stayed a challenge bought one solve per attempt
+  (measured with a stubbed solver: 4 in each engine against a limit of 1).
+  One `page_flow.SolveBudget` per page now covers both call sites in all
+  three engines and is checked before the purchase; a retry or a rotation
+  does not reset it.
+- **A site error page or an unsolved challenge read as an empty catalogue.**
+  Parsing now runs only for states the policy says are worth parsing, the
+  page is re-classified after the readiness wait, and a served page with no
+  rows that is not the site's own no-results answer is recorded as
+  `served_without_results` or `parser_found_nothing` (see the exit codes
+  above). A sanitized fixture cut from the 2026-10-07 canary capture covers
+  the error page.
+- **The navigation's HTTP status now reaches the classifier** in the
+  Playwright and pyppeteer engines, so a refusal with no challenge body is
+  not read as a page still painting. Selenium exposes no status.
+- **A failed write could truncate good output.** JSON, CSV and the
+  `.meta.json` sidecar are written to a temporary file beside the target,
+  flushed, synced and renamed over it; on an error the previous file is
+  untouched and no temporary file is left.
+- **A card rendered without a price carried a currency.** A currency now
+  needs a price beside it, on listing and property rows ("This property does
+  not allow 2-night stays for those dates", from a real capture).
+- **The credential scan passed with 0 files read** when the clone lived
+  under a directory named `venv` or `.venv`: it tested the absolute path.
+  It now tests the path relative to the repository, treats an empty scan as
+  a failure, and reads committed `.json`, `.csv` and `.html` files too.
+- **The canary was green without testing anything.** Every "success" for at
+  least 20 days was a block (exit 3) or a partial run whose page turn was
+  refused (exit 6), and its pinned stay dates were drifting towards the
+  past. It now has a `first-page` job that needs no secret and fails unless
+  page 1 yields rows that pass `.github/canary_check.py`, and a `pagination`
+  job that walks three pages through the `VRBO_PROXY` secret and fails,
+  naming the secret, when it is absent. Stay dates are computed from the run
+  date.
+- Comments that described another site's behaviour (a discovery hub, an
+  Indonesian no-results string, a connection reset) were replaced with this
+  site's, and `.gitignore` now covers captures by kind (`*.html`, `*.htm`,
+  `*.pageN`, `live/`, `dumps/`).
+- `tests.yml` runs the `--help` and sample checks from `.github/ci_checks.py`
+  only, instead of a second inline copy of each; `diff_runs.py` joined the
+  `--help` list.
+- README and CONTRIBUTING describe exit 5 as "content not obtained", which
+  is what it covers, and the storefront count matches the host table (five).
+- Shipped files no longer cite private notes or section numbers; each rule
+  is stated where it applies, and the suite fails if such a citation
+  returns.
+
 ## [0.2.0] — 2026-10-08
 
 > **Behaviour change:** `--retries 0` is now refused with a usage error
