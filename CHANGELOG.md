@@ -10,6 +10,11 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: the canary's paid `pagination` job now runs weekly (Mondays 06:20
+  UTC) and on a manual dispatch; the free `first-page` job still runs daily.
+
 ## [0.3.0] — 2026-10-15
 
 > **Behaviour changes:**
