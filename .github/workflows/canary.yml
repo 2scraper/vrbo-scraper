@@ -18,8 +18,7 @@ name: canary
 #                rate response that has been measured clearing.
 #
 #   pagination   Needs the VRBO_PROXY secret, and FAILS naming it when the
-#                secret is absent. Every run bills the proxy, so it runs
-#                weekly (Mondays) and on a manual dispatch only. The page turn's data comes over POST
+#                secret is absent. The page turn's data comes over POST
 #                /graphql, and from the runner's address it was answered HTTP
 #                429 on all 13 of those runs that pressed next (exit 6,
 #                next_page_throttled), so the walk can only be tested from
@@ -45,9 +44,6 @@ on:
   schedule:
     # 06:20 UTC. Off the hour, because everything else in the world runs on
     # it and a queued runner adds nothing but latency.
-    - cron: "20 6 * * *"
-    # Mondays only: the paid job (pagination) runs on this
-    # schedule (each run bills); the free jobs keep the daily one above.
     - cron: "20 6 * * 1"
   workflow_dispatch:
 
@@ -123,8 +119,6 @@ jobs:
           retention-days: 14
 
   pagination:
-    # Paid path: weekly schedule or a manual dispatch only.
-    if: github.event_name != 'schedule' || github.event.schedule == '20 6 * * 1'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
