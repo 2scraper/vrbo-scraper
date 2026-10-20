@@ -198,13 +198,18 @@ quoted, so a `True` would be an inference dressed as a reading).
 `3` covers the site's "Bot or Not?" refusal and a challenge still on the page
 after the allowed solve and retries. `4` is only the site's own "no results"
 answer. `5` means nothing can be said about the catalogue: a navigation
-timeout, a dead proxy, a remote API error, a page the site served without
+timeout, a dead proxy, a proxy that refused the credential or the balance
+before the run began (`stop_reason: proxy_auth_failed` /
+`proxy_balance_exhausted`), a remote API error, a page the site served without
 its results (its own "Sorry, we're having a problem on our end" copy, for
 one), or a grid on the page that the parser read as 0 rows. `6` means rows
 were written but a later page failed in one of those ways.
 
 A run that finds nothing **writes nothing**, so a failure cannot overwrite
 last night's good output. `--allow-empty` is the opt-out.
+The proxy pre-check below is the one failure that writes a file:
+`<out>.latest_attempt.meta.json`, a separate record that leaves the output
+and its `<out>.meta.json` untouched.
 
 ---
 
@@ -262,6 +267,40 @@ closing one needs a README edit rather than a quiet patch:
   use an authenticated CDP endpoint at all)
 * `--locale`, `--fingerprint`, `--fp-tags`, `--fp-country` — Playwright and
   Selenium only
+
+### Proxy traffic savers
+
+A proxy is billed by traffic. With `--proxy` / `--proxy-file` / `VRBO_PROXY`:
+
+- **One pre-check before any browser starts.** All three engines send a
+  CONNECT through the proxy, then a `HEAD /robots.txt` to www.vrbo.com.
+  Chromium reports a proxy's HTTP 407 as a navigation timeout, so a wrong or
+  exhausted credential used to spend every retry before failing. Now the run
+  stops in seconds with **exit 5** on either answer:
+  - **407**: the gateway refused the credential (or the traffic balance is
+    exhausted).
+  - **402**: proxy traffic/balance exhausted.
+
+  It writes `<out>.latest_attempt.meta.json` with `status: failed` and
+  `stop_reason: proxy_auth_failed` (or `proxy_balance_exhausted`). The
+  message names the variable and never prints the credential. If the proxy
+  does not answer at all, the run goes on as before. No pre-check runs
+  without a proxy or with `--cdp-endpoint`.
+- **Media blocking is available but OFF by default on this site.**
+  `--block-media` aborts image, video/audio and font requests:
+  - Playwright blocks by resource type, and pyppeteer through CDP's Fetch
+    domain.
+  - Selenium blocks by file extension, with CDP `Network.setBlockedURLs`.
+
+  It is not the default because it changes the output. Measured on
+  2026-10-20 on the Orlando search, with no proxy and one page per run:
+  - With images blocked, `image_url` was null on 4 of the 14 rows that a
+    media-loaded run also returned.
+  - Card images mount only as they load.
+  - DataDome also scores what a browser loads, and of the four runs, the
+    second of each back-to-back pair was challenged.
+
+  `--load-media` (or `VRBO_LOAD_MEDIA=1`) states the default explicitly.
 
 ---
 
