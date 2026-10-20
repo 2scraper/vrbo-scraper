@@ -10,6 +10,33 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+> **Behaviour change.** A run through a proxy now makes one pre-check
+> request before starting a browser. A proxy that answers **HTTP 407** or
+> **402** ends the run with **exit 5** and
+> `<out>.latest_attempt.meta.json` (`status: failed`, `stop_reason:
+> proxy_auth_failed` / `proxy_balance_exhausted`), instead of timing out on
+> every retry. Runs without a proxy or over `--cdp-endpoint` are unchanged.
+
+### Added
+
+- `proxy_check.py`: the proxy pre-check (one CONNECT plus `HEAD /robots.txt`
+  on www.vrbo.com, no third-party service) for all three engines.
+  - On a 407, the message names `VRBO_PROXY` and says the gateway refused
+    the credential (or the traffic balance is exhausted).
+  - On a 402, it says the proxy traffic/balance is exhausted.
+  - Neither message prints the credential.
+  - A proxy that does not answer keeps the existing retry behaviour.
+- `--block-media` (opt-in) aborts image, video/audio and font requests on
+  all three engines. It is off by default here: with images blocked,
+  `image_url` came back null on some rows. `--load-media` and
+  `VRBO_LOAD_MEDIA` state the default explicitly.
+- Offline checks:
+  - A stub proxy that answers 407, 402 or 200, or nothing at all.
+  - Each engine is driven to exit 5 on a 407 without starting a browser.
+  - The attempt sidecar.
+  - The route handler, the Fetch patterns and the blocked-URL list.
+  - When each engine installs blocking.
+
 ### Changed
 
 - CI only: the whole canary, free and paid jobs alike, now runs weekly (Mondays 06:20 UTC) and on a manual dispatch; the daily schedule is removed.

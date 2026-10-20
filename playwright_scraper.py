@@ -89,11 +89,13 @@ from product_parser import (parse_products, parse_property_page, SELECTORS,
                             detect_bot_challenge, listing_kind, page_currency,
                             results_range, served_by_vrbo, site_host,
                             is_supported_host, source_of, unsupported_reason)
-from output_writer import dedupe_by_key, finish_run, EXIT_API_ERROR
+from output_writer import (dedupe_by_key, finish_run, finish_without_fetch,
+                           EXIT_API_ERROR)
 import page_flow
 from proxy_pool import (from_args as proxy_pool_from_args, to_playwright, mask,
                         ROTATE_MODES, ProxyError)
 import env_config
+import proxy_check
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -418,6 +420,8 @@ def _launch_local(pw, args, pool):
     context = browser.new_context(**ctx_kwargs)
     if init_script:
         context.add_init_script(init_script)
+    if proxy_check.block_media(args, pool, remote=False):
+        proxy_check.install_playwright(context)
     return browser, context, context.new_page()
 
 
@@ -1075,6 +1079,16 @@ def scrape(args) -> int:
         logger.warning("--concurrency %d is refused: %s.",
                        args.concurrency, refusal)
 
+    # One request through the proxy before a browser exists: a 407 or 402
+    # from the gateway ends the run here, in seconds, instead of surfacing
+    # as a navigation timeout after every retry.
+    refused = proxy_check.gate(pool, args.url)
+    if refused:
+        return finish_without_fetch(
+            args.out, stop_reason=refused.stop_reason,
+            pages_requested=args.pages, start_url=args.url, mode=args.mode,
+            source=source_of(args.url))
+
     session = None
     with sync_playwright() as pw:
         session = _BrowserSession(pw, args, pool,
@@ -1409,6 +1423,7 @@ def parse_args():
                    help="reCAPTCHA v3 minimum score to request (0.3, 0.7 or "
                         "0.9 — the API only accepts these three). Ignored for "
                         "v2 widgets.")
+    proxy_check.add_media_flags(p)
     p.add_argument("--cdp-endpoint", default=None,
                    help="Connect to an already-running browser over CDP "
                         "instead of launching one locally, e.g. "

@@ -449,6 +449,35 @@ def write_run_meta(out_prefix: str, meta: dict) -> str:
     return path
 
 
+ATTEMPT_META_SUFFIX = ".latest_attempt.meta.json"
+
+
+def finish_without_fetch(out_prefix: str, *, stop_reason: str,
+                         pages_requested: int, start_url: str,
+                         mode: str = "listing", source: str = SOURCE_DEFAULT,
+                         message: str = "") -> int:
+    """End a run that was stopped before anything was fetched; exit 5.
+
+    Used by the proxy pre-check (a 407 or 402 from the proxy). The record
+    goes to `<out>.latest_attempt.meta.json`, NOT `<out>.meta.json`: the
+    latter describes the data file beside it, and a previous run's good
+    output is still there, untouched, so overwriting its metadata with
+    `status: failed` would make the pair contradict each other.
+    """
+    meta = run_meta(status="failed", stop_reason=stop_reason,
+                    pages_requested=pages_requested, pages_completed=0,
+                    start_url=start_url, final_url=start_url, products=0,
+                    mode=mode, source=source)
+    path = f"{out_prefix}{ATTEMPT_META_SUFFIX}"
+    with _atomic(path) as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    print(f"[+] Wrote attempt metadata -> {path} (status=failed, "
+          f"stop_reason={stop_reason})")
+    print(f"[!] Failed run: nothing was fetched ({stop_reason}). "
+          f"{message} Any previous output and its .meta.json are untouched.")
+    return EXIT_FETCH_FAILED
+
+
 def run_meta(status: str, stop_reason: str, pages_requested: int,
              pages_completed: int, start_url: str, final_url: str,
              products: int, pages_failed: Optional[List[int]] = None,

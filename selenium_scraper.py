@@ -54,11 +54,12 @@ from product_parser import (parse_products, parse_property_page, SELECTORS,
                             detect_bot_challenge, listing_kind, page_currency,
                             results_range, served_by_vrbo, source_of,
                             unsupported_reason)
-from output_writer import dedupe_by_key, finish_run
+from output_writer import dedupe_by_key, finish_run, finish_without_fetch
 import page_flow
 from proxy_pool import (from_args as proxy_pool_from_args, split_credentials,
                         mask, ROTATE_MODES, ProxyError)
 import env_config
+import proxy_check
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -205,6 +206,8 @@ class _Session:
 
         self.driver = webdriver.Chrome(options=options)
         self._apply_timeouts()
+        if proxy_check.block_media(self.args, self.pool, remote=False):
+            proxy_check.install_selenium(self.driver)
 
         version = self.driver.capabilities.get("browserVersion", "")
         if version:
@@ -755,6 +758,16 @@ def scrape(args) -> int:
         logger.warning("--concurrency %d is refused: %s.", args.concurrency,
                        page_flow.concurrency_refusal(args.url))
 
+    # One request through the proxy before a browser exists: a 407 or 402
+    # from the gateway ends the run here, in seconds, instead of surfacing
+    # as a navigation timeout after every retry.
+    refused = proxy_check.gate(pool, args.url)
+    if refused:
+        return finish_without_fetch(
+            args.out, stop_reason=refused.stop_reason,
+            pages_requested=args.pages, start_url=args.url, mode=args.mode,
+            source=source_of(args.url))
+
     session = _Session(args, pool).open()
     try:
         first = _fetch_one_page(session, args, pool, 1, args.url)
@@ -966,6 +979,7 @@ def parse_args():
                         "are reported as blocked and nothing is charged.")
     p.add_argument("--min-score", type=float, default=0.7,
                    help="reCAPTCHA v3 minimum score (0.3, 0.7 or 0.9).")
+    proxy_check.add_media_flags(p)
     p.add_argument("--cdp-endpoint", default=None,
                    help="Attach to a running browser at host:port. NOTE: "
                         "Selenium cannot use an AUTHENTICATED endpoint — "
