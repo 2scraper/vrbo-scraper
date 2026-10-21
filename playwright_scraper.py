@@ -96,6 +96,7 @@ from proxy_pool import (from_args as proxy_pool_from_args, to_playwright, mask,
                         ROTATE_MODES, ProxyError)
 import env_config
 import proxy_check
+import proxy_meter
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -422,6 +423,9 @@ def _launch_local(pw, args, pool):
         context.add_init_script(init_script)
     if proxy_check.block_media(args, pool, remote=False):
         proxy_check.install_playwright(context)
+    # After the media route, so the budget route runs first (Playwright
+    # runs routes in reverse order of registration).
+    proxy_meter.install_playwright(context, proxy_meter.of(args))
     return browser, context, context.new_page()
 
 
@@ -735,6 +739,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: Optional[str]) -> P
         if url is not None:
             logger.info("Fetching page %d/%d: %s", page_num, args.pages, url)
             for attempt in range(1, args.retries + 1):
+                proxy_meter.check(args)
                 try:
                     response = session.page.goto(
                         url, wait_until="domcontentloaded", timeout=60000)
@@ -762,6 +767,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: Optional[str]) -> P
             logger.info("Turning to page %d/%d by pressing the site's own "
                         "next button (this listing has no page-%d address).",
                         page_num, args.pages, page_num)
+            proxy_meter.check(args)
             throttled_before = _graphql_throttled(session)
             turn = page_flow.advance_to_next_page(
                 lambda: _press_next(session.page),
@@ -1088,6 +1094,7 @@ def scrape(args) -> int:
             args.out, stop_reason=refused.stop_reason,
             pages_requested=args.pages, start_url=args.url, mode=args.mode,
             source=source_of(args.url))
+    meter = proxy_meter.start(args, pool, remote=bool(args.cdp_endpoint))
 
     session = None
     with sync_playwright() as pw:
@@ -1171,9 +1178,17 @@ def scrape(args) -> int:
                                     "listing.", page_num)
                         stop_reason = "no_new_products"
                         break
+        except proxy_meter.ProxyBudgetExceeded as e:
+            logger.error("Stopping: %s. The pages already gathered are "
+                         "kept.", e)
         finally:
             if session is not None:
                 session.close()
+
+    # Over budget is the stop reason whatever the loop concluded: the
+    # requests after the cap were refused, so nothing after it was read.
+    if meter is not None and meter.exceeded:
+        stop_reason, blocked = proxy_meter.STOP_BUDGET_EXCEEDED, False
 
     # Merge once, in PAGE order — not in the order pages happened to finish.
     all_rows = []
@@ -1259,6 +1274,7 @@ def scrape(args) -> int:
                 "out, so their row counts are floors rather than the "
                 "listing.", ", ".join(str(n) for n in unsettled))
 
+    extra = proxy_meter.finish(args, extra)
     return finish_run(all_rows, args.out, args.format, args.allow_empty,
                       blocked=blocked, stop_reason=stop_reason,
                       pages_requested=args.pages, pages_completed=len(ok_pages),
@@ -1424,6 +1440,7 @@ def parse_args():
                         "0.9 — the API only accepts these three). Ignored for "
                         "v2 widgets.")
     proxy_check.add_media_flags(p)
+    proxy_meter.add_budget_flag(p)
     p.add_argument("--cdp-endpoint", default=None,
                    help="Connect to an already-running browser over CDP "
                         "instead of launching one locally, e.g. "

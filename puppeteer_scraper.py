@@ -70,6 +70,7 @@ from proxy_pool import (from_args as proxy_pool_from_args, split_credentials,
                         mask, ROTATE_MODES, ProxyError)
 import env_config
 import proxy_check
+import proxy_meter
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -287,6 +288,8 @@ class _Session:
                 {"username": credentials[0], "password": credentials[1]}))
         if proxy_check.block_media(self.args, self.pool, remote=False):
             self.bridge.run(proxy_check.install_pyppeteer(self.page))
+        self.bridge.run(proxy_meter.install_pyppeteer(
+            self.page, proxy_meter.of(self.args)))
         return self
 
     def relaunch(self):
@@ -520,6 +523,7 @@ def _fetch_one_page(session, args, pool, page_num: int,
         if url is not None:
             logger.info("Fetching page %d/%d: %s", page_num, args.pages, url)
             for attempt in range(1, args.retries + 1):
+                proxy_meter.check(args)
                 try:
                     response = session.bridge.run(session.page.goto(
                         url, {"waitUntil": "domcontentloaded",
@@ -542,6 +546,7 @@ def _fetch_one_page(session, args, pool, page_num: int,
             logger.info("Turning to page %d/%d by pressing the site's own "
                         "next button (this listing has no page-%d address).",
                         page_num, args.pages, page_num)
+            proxy_meter.check(args)
             turn = page_flow.advance_to_next_page(
                 lambda: _press_next(session),
                 lambda: _first_card_href(session),
@@ -784,6 +789,7 @@ def scrape(args) -> int:
             args.out, stop_reason=refused.stop_reason,
             pages_requested=args.pages, start_url=args.url, mode=args.mode,
             source=source_of(args.url))
+    meter = proxy_meter.start(args, pool, remote=bool(args.cdp_endpoint))
 
     bridge = _AsyncBridge()
     session = _Session(bridge, args, pool).open()
@@ -838,9 +844,16 @@ def scrape(args) -> int:
                                 page_num)
                     stop_reason = "no_new_products"
                     break
+    except proxy_meter.ProxyBudgetExceeded as e:
+        logger.error("Stopping: %s. The pages already gathered are kept.", e)
     finally:
         session.close()
         bridge.close()
+
+    # Over budget is the stop reason whatever the loop concluded: the
+    # requests after the cap were refused, so nothing after it was read.
+    if meter is not None and meter.exceeded:
+        stop_reason, blocked = proxy_meter.STOP_BUDGET_EXCEEDED, False
 
     all_rows = []
     merged_seen = set()
@@ -900,6 +913,7 @@ def scrape(args) -> int:
                  "results_total_is_floor": total_is_floor,
                  "pages_still_growing": unsettled}
 
+    extra = proxy_meter.finish(args, extra)
     return finish_run(all_rows, args.out, args.format, args.allow_empty,
                       blocked=blocked, stop_reason=stop_reason,
                       pages_requested=args.pages, pages_completed=len(ok_pages),
@@ -983,6 +997,7 @@ def parse_args():
     p.add_argument("--min-score", type=float, default=0.7,
                    help="reCAPTCHA v3 minimum score (0.3, 0.7 or 0.9).")
     proxy_check.add_media_flags(p)
+    proxy_meter.add_budget_flag(p)
     p.add_argument("--cdp-endpoint", default=None,
                    help="Connect to a running browser over CDP, e.g. "
                         "ws://user:pass@host:port. pyppeteer authenticates on "

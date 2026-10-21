@@ -200,16 +200,19 @@ after the allowed solve and retries. `4` is only the site's own "no results"
 answer. `5` means nothing can be said about the catalogue: a navigation
 timeout, a dead proxy, a proxy that refused the credential or the balance
 before the run began (`stop_reason: proxy_auth_failed` /
-`proxy_balance_exhausted`), a remote API error, a page the site served without
+`proxy_balance_exhausted`), the proxy budget spent before any row
+(`proxy_budget_exceeded`), a remote API error, a page the site served without
 its results (its own "Sorry, we're having a problem on our end" copy, for
 one), or a grid on the page that the parser read as 0 rows. `6` means rows
-were written but a later page failed in one of those ways.
+were written but a later page failed in one of those ways, or the run
+stopped at `--proxy-budget-mb` (`stop_reason: proxy_budget_exceeded`).
 
 A run that finds nothing **writes nothing**, so a failure cannot overwrite
 last night's good output. `--allow-empty` is the opt-out.
 The proxy pre-check below is the one failure that writes a file:
 `<out>.latest_attempt.meta.json`, a separate record that leaves the output
-and its `<out>.meta.json` untouched.
+and its `<out>.meta.json` untouched. A run through a local proxy also writes
+that file, with its proxy traffic, whether it got rows or not.
 
 ---
 
@@ -301,6 +304,42 @@ A proxy is billed by traffic. With `--proxy` / `--proxy-file` / `VRBO_PROXY`:
     second of each back-to-back pair was challenged.
 
   `--load-media` (or `VRBO_LOAD_MEDIA=1`) states the default explicitly.
+- **Every run through a local proxy is metered and capped.**
+  `--proxy-budget-mb` (default **10**, `0` = no cap, also
+  `VRBO_PROXY_BUDGET_MB`). Once more than that has gone through the proxy:
+  - further requests are refused;
+  - the run stops before its next navigation or page turn;
+  - it keeps the rows it has and exits **6** (or **5** with no rows), with
+    `stop_reason: proxy_budget_exceeded`. It never carries on past the cap.
+
+  Media is loaded by default here, and images are most of a search page's
+  bytes, so a long walk through a proxy reaches 10 MB sooner than on a site
+  that blocks them. Raise the budget, or pass `--block-media` if `image_url`
+  is not needed. The sidecars record `proxy_bytes`, `proxy_budget_bytes`
+  (`null` with no cap) and `proxy_budget_exceeded`: in `<out>.meta.json`,
+  and in `<out>.latest_attempt.meta.json`, which every metered run writes.
+  The log ends with `Proxy traffic: X.X MB of Y MB budget`.
+
+How the bytes are counted, per engine:
+- **Playwright** sums `request.sizes()` of every finished or failed request:
+  request headers + body, response headers + body.
+- **pyppeteer** reads CDP `Network.loadingFinished.encodedDataLength`
+  (bytes received, headers included), plus each request's line, headers and
+  body from `Network.requestWillBeSent`.
+- **Selenium** reads the same CDP events from chromedriver's performance
+  log, after each page and page turn.
+
+The figure is an **estimate of the payload through the tunnel**. TLS, the
+CONNECT exchange and connections the browser opens for itself are not
+visible to any engine, and add a few percent. Measured 2026-10-21 against a
+local stub proxy that counted every byte it carried (a 60 kB page, a 30 kB
+stylesheet and a 90 kB script):
+- Playwright was within 0.2%.
+- pyppeteer was within 0.6%.
+- Selenium was within 0.7%.
+
+A megabyte here is 10^6 bytes. Nothing is metered without a proxy or over
+`--cdp-endpoint`.
 
 ---
 

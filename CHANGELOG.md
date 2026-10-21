@@ -16,8 +16,40 @@ that is a fix, and the release notes lead with it.
 > `<out>.latest_attempt.meta.json` (`status: failed`, `stop_reason:
 > proxy_auth_failed` / `proxy_balance_exhausted`), instead of timing out on
 > every retry. Runs without a proxy or over `--cdp-endpoint` are unchanged.
+>
+> **Behaviour change.** A run through a local proxy now **stops at 10 MB of
+> proxy traffic** by default (`--proxy-budget-mb`, `0` = no cap). It keeps
+> its rows and exits **6** (**5** with none) with `stop_reason:
+> proxy_budget_exceeded`, and it always writes
+> `<out>.latest_attempt.meta.json`. Media is loaded by default on this site,
+> so a long walk through a proxy reaches the cap sooner.
 
 ### Added
+
+- `proxy_meter.py`: a per-run proxy traffic meter and budget in all three
+  engines. It is active only through a local proxy.
+  - Counting: Playwright sums `request.sizes()`. pyppeteer and Selenium count
+    CDP `Network.loadingFinished.encodedDataLength`, plus each request's own
+    size.
+  - Over budget: Playwright aborts new requests in a route, pyppeteer and
+    Selenium block every URL over CDP, and the run stops before its next
+    navigation or page turn.
+  - New sidecar fields `proxy_bytes`, `proxy_budget_bytes` and
+    `proxy_budget_exceeded`, and a closing log line
+    `Proxy traffic: X.X MB of Y MB budget`.
+  - `--proxy-budget-mb`, and `VRBO_PROXY_BUDGET_MB` (in `.env.example`).
+- CI only: both canary runs pass `--proxy-budget-mb 10`. Each one writes its
+  proxy traffic to the step summary, and fails with
+  `::error::stopped: proxy budget 10 MB exceeded` when the cap was hit
+  (`.github/proxy_traffic.py`).
+- Offline checks:
+  - The meter against known CDP and Playwright sizes.
+  - An HTTP client through a stub proxy that counts every byte.
+  - The sidecars and exit codes over budget.
+  - Every engine driven past the budget.
+  - The canary steps and their summary script.
+  - An opt-in real-browser check (`PROXY_METER_BROWSER=1`), which compares
+    each driver's count with a stub proxy's.
 
 - `proxy_check.py`: the proxy pre-check (one CONNECT plus `HEAD /robots.txt`
   on www.vrbo.com, no third-party service) for all three engines.

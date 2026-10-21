@@ -37,7 +37,7 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-playwright.tx
 # `--help` — a broken container that nothing in the repo would have noticed.
 COPY captcha_solver.py env_config.py fingerprint_client.py output_writer.py \
      page_flow.py playwright_scraper.py product_parser.py proxy_pool.py \
-     proxy_check.py diff_runs.py ./
+     proxy_check.py proxy_meter.py diff_runs.py ./
 
 # Headful by default everywhere else in this repo; in a container there is no
 # display, so the engine runs headless here. That is a real limitation rather
