@@ -73,6 +73,10 @@ that is a fix, and the release notes lead with it.
 
 - CI only: the whole canary, free and paid jobs alike, now runs weekly (Mondays 06:20 UTC) and on a manual dispatch; the daily schedule is removed.
 
+### Fixed
+
+- The pyppeteer and Selenium proxy meter counts only `http://` / `https://` requests and responses that came over the network. Chrome's own loads (the `chrome://` new-tab page, `data:`, `blob:`), cache hits (`requestServedFromCache`, `fromDiskCache`, `fromPrefetchCache`, `fromServiceWorker`) and Chrome's error page count nothing. A sibling repo's Selenium run had counted about 2.8 MB of new-tab scripts while its proxy carried about 6 KB. The pyppeteer block sent once the budget is spent now reaches the page's own event loop even when the budget runs out on another thread.
+
 ## [0.3.0] — 2026-10-15
 
 > **Behaviour changes:**

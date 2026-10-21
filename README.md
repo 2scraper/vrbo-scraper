@@ -327,7 +327,7 @@ How the bytes are counted, per engine:
   (bytes received, headers included), plus each request's line, headers and
   body from `Network.requestWillBeSent`.
 - **Selenium** reads the same CDP events from chromedriver's performance
-  log, after each page and page turn.
+  log, after each page and page turn. Only `http(s)` requests and responses that came over the network are counted: Chrome's own `chrome://`, `data:` and `blob:` loads, cache hits and Chrome's error page count nothing.
 
 The figure is an **estimate of the payload through the tunnel**. TLS, the
 CONNECT exchange and connections the browser opens for itself are not
