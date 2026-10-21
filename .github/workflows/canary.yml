@@ -81,13 +81,19 @@ jobs:
           echo "Stay ${start} to ${end}"
           for attempt in 1 2; do
             xvfb-run -a python3 playwright_scraper.py --url "$url" \
-              --pages 1 --retries 4 \
+              --pages 1 --retries 4 --proxy-budget-mb 10 \
               --out canary_run --dump-html canary_run.html
             code=$?
             [ "$code" != "3" ] && break
             [ "$attempt" = "1" ] && echo "Blocked (exit 3); waiting 120s and trying once more." && sleep 120
           done
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Proxy traffic of the first-page run
+        # No proxy in this job, so this normally reads "not metered"; it is
+        # here so a proxy added to this job later is metered and capped too.
+        if: ${{ !cancelled() }}
+        run: python3 .github/proxy_traffic.py "first-page" canary_run
 
       - name: Require rows
         run: |
@@ -159,9 +165,16 @@ jobs:
           end=$(date -u -d '+47 days' +%F)
           url="https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=${start}&endDate=${end}&adults=2"
           xvfb-run -a python3 playwright_scraper.py --url "$url" \
-            --pages 3 --delay 15 --retries 4 \
+            --pages 3 --delay 15 --retries 4 --proxy-budget-mb 10 \
             --out canary_walk --dump-html canary_walk.html
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Proxy traffic of the walk
+        # The walk goes through VRBO_PROXY, which meters what it sends and
+        # stops at --proxy-budget-mb 10. This puts the figure in the step
+        # summary and fails the job when the cap was hit.
+        if: ${{ !cancelled() && steps.run.outcome != 'skipped' }}
+        run: python3 .github/proxy_traffic.py "pagination" canary_walk
 
       - name: Require a complete walk
         run: |
