@@ -50,12 +50,20 @@ Look at `stop_reason` in `<out>.meta.json`.
 on the page. The data behind a next-press comes over `POST /graphql`, which
 has its own limiter: the HTML keeps answering 200 while the turn is refused
 with `{"error":"Too Many Requests","message":"Provisioned request rate has
-been exceeded"}`. The log says how many 429s it counted.
+been exceeded"}`, with no `Retry-After` header. The log says how many 429s
+it counted (Playwright only; Selenium and pyppeteer cannot see the response).
+
+Before it stops, the run has already retried that turn once: it waited a
+random 30-60 s (`--throttle-wait-seconds`, default 45) in the same browser
+session and exit, then pressed next again. `throttle_retries` in the sidecar
+counts those retries. `next_page_throttled` means the retry was refused too
+(or the proxy budget was spent first, which reads `proxy_budget_exceeded`).
 
 In order of cost:
 
 1. `--delay 15` (the default is 5)
-2. wait a few minutes — this clears on its own
+2. a longer `--throttle-wait-seconds`, or wait a few minutes and re-run —
+   this clears on its own
 3. `--proxy-file` to spread the load across exits
 
 It is reported as partial rather than complete **on purpose**. Reporting a
