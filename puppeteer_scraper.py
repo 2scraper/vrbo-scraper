@@ -66,7 +66,8 @@ from product_parser import (parse_products, parse_property_page, SELECTORS,
                             unsupported_reason)
 from output_writer import dedupe_by_key, finish_run, finish_without_fetch
 import page_flow
-from proxy_pool import (from_args as proxy_pool_from_args, split_credentials,
+from proxy_pool import (from_args as proxy_pool_from_args, session_fields,
+                        add_session_flag, split_credentials,
                         mask, ROTATE_MODES, ProxyError)
 import env_config
 import proxy_check
@@ -947,6 +948,7 @@ def scrape(args) -> int:
                  "results_total_is_floor": total_is_floor,
                  "pages_still_growing": unsettled}
 
+    extra = session_fields(pool, extra)
     extra = proxy_meter.finish(args, extra)
     return finish_run(all_rows, args.out, args.format, args.allow_empty,
                       blocked=blocked, stop_reason=stop_reason,
@@ -1031,6 +1033,7 @@ def parse_args():
     p.add_argument("--min-score", type=float, default=0.7,
                    help="reCAPTCHA v3 minimum score (0.3, 0.7 or 0.9).")
     proxy_check.add_media_flags(p)
+    add_session_flag(p)
     proxy_meter.add_budget_flag(p)
     p.add_argument("--cdp-endpoint", default=None,
                    help="Connect to a running browser over CDP, e.g. "

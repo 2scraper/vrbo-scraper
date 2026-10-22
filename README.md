@@ -341,6 +341,30 @@ stylesheet and a 90 kB script):
 A megabyte here is 10^6 bytes. Nothing is metered without a proxy or over
 `--cdp-endpoint`.
 
+### One exit for the whole run
+
+A results walk is one browser session that turns pages with a button. On a
+2Captcha residential gateway (a host under `.proxy.2captcha.com` or
+`.proxy.rucaptcha.com`), a login with no session segment, such as
+`ACCOUNT-zone-custom-region-US`, may be answered from a different address on
+each connection. Page 3 could then replay page 1's cookies from another
+exit. So when the login names no `-session-`, the run appends one random
+`-session-<id>-sessTime-<minutes>` to it, once, before the pre-check and the
+browser. Every request of the run then goes out on that login:
+
+- `--proxy-session-minutes N` (also `VRBO_PROXY_SESSION_MINUTES`): how long
+  the gateway holds the exit, default **30**, at most 120. `0` turns the pin
+  off and sends the login as given.
+- A login that already carries `-session-` is used exactly as given. A login
+  with only `-sessTime-` keeps that duration and gains an id.
+- With `--proxy-file`, each gateway line gets its own session id, so a
+  rotation is a new browser on a different exit. The proxy is never changed
+  under a live browser.
+- Other proxies and IP-whitelisted gateway URLs (no login) are not touched.
+- The sidecar records `proxy_session_pinned: true/false`, never the id, and
+  the log masks the whole login. Selenium cannot send a proxy login at all,
+  so it always records `false`.
+
 ---
 
 ## Do you need any of the paid products?
@@ -557,7 +581,8 @@ variable → `.env` → the default. Anything still carrying `{...}` braces is
 treated as unset, so a copied example is never sent to an API as if it were a
 key.
 
-Variables: `TWOCAPTCHA_KEY`, `VRBO_CDP_ENDPOINT`, `VRBO_PROXY`, `VRBO_URL`.
+Variables: `TWOCAPTCHA_KEY`, `VRBO_CDP_ENDPOINT`, `VRBO_PROXY`, `VRBO_URL`,
+`VRBO_LOAD_MEDIA`, `VRBO_PROXY_BUDGET_MB`, `VRBO_PROXY_SESSION_MINUTES`.
 
 ---
 
