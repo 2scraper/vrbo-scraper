@@ -45,6 +45,9 @@ ENV_KEYS = {
     "VRBO_LOAD_MEDIA": "load_media",
     # Proxy traffic cap per run in MB (--proxy-budget-mb); 0 = no cap.
     "VRBO_PROXY_BUDGET_MB": "proxy_budget_mb",
+    # Sticky-session minutes on a 2Captcha gateway (--proxy-session-minutes);
+    # 0 = do not pin.
+    "VRBO_PROXY_SESSION_MINUTES": "proxy_session_minutes",
 }
 # Deliberately NOT here: an output prefix. `--out` already carries a non-empty
 # default, so `apply()` would never see it as unset and the variable would be

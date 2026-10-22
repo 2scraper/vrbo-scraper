@@ -10,6 +10,14 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+> **Behaviour change.** On a 2Captcha residential gateway
+> (`*.proxy.2captcha.com`, `*.proxy.rucaptcha.com`), a proxy login with no
+> `-session-` segment now gets one random `-session-<id>-sessTime-30`
+> appended for the run, so every page leaves from one exit.
+> `--proxy-session-minutes` / `VRBO_PROXY_SESSION_MINUTES` sets the minutes
+> (0 to 120); `0` sends the login unchanged. A login that already names a
+> session is used as given.
+
 > **Behaviour change.** A run through a proxy now makes one pre-check
 > request before starting a browser. A proxy that answers **HTTP 407** or
 > **402** ends the run with **exit 5** and
@@ -26,6 +34,15 @@ that is a fix, and the release notes lead with it.
 
 ### Added
 
+- `--proxy-session-minutes` in all three engines, and
+  `VRBO_PROXY_SESSION_MINUTES` in `.env.example`. The session id is drawn
+  once per run, before the pre-check; with `--proxy-file`, each gateway line
+  gets its own id after duplicates are dropped. The sidecar gains
+  `proxy_session_pinned` (never the id). Selenium records `false`, because
+  it cannot send a proxy login. Offline checks cover the login rewrite, the
+  cases left alone, one login across the pre-check and later reads,
+  rotation, flag and environment validation, and the sidecar field in each
+  engine.
 - `proxy_meter.py`: a per-run proxy traffic meter and budget in all three
   engines. It is active only through a local proxy.
   - Counting: Playwright sums `request.sizes()`. pyppeteer and Selenium count

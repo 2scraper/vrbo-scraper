@@ -1126,7 +1126,7 @@ def test_env_config():
     ok &= check("every ENV_KEYS value is a real CLI destination",
                 set(env_config.ENV_KEYS.values()) ==
                 {"twocaptcha_key", "cdp_endpoint", "proxy", "url",
-                 "load_media", "proxy_budget_mb"})
+                 "load_media", "proxy_budget_mb", "proxy_session_minutes"})
     # A variable mapped onto a flag with a non-empty default would be
     # silently inert — a setting that looks configurable and is not.
     ok &= check("--out is deliberately NOT mapped",
@@ -1198,6 +1198,181 @@ def test_proxy_pool():
     pool.advance("test")
     ok &= check("advance moves to a different exit", pool.current != first)
     ok &= check("the pool knows its size", len(pool) == 3)
+    return ok
+
+
+def test_proxy_sticky_session():
+    """A walk is one browser session turned by a button; an exit that
+    changes between pages replays page 1's cookies from a new address."""
+    group("A 2Captcha gateway login with no session is pinned once per run")
+    ok = True
+    import argparse
+    import random as random_module
+    import types
+    import proxy_check
+    import proxy_pool as pp
+    pw_ = "pa" + "ss"
+    login = "acct1-zone-custom-region-US"
+    gw = f"http://{login}:{pw_}@na.proxy.2captcha.com:2334"
+    sid_re = r"-session-([A-Za-z0-9]{12})-sessTime-(\d+)$"
+
+    def user(url):
+        from urllib.parse import urlparse
+        return urlparse(url).username
+
+    pinned = pp.pin_session(gw, 30)
+    m = re.search(sid_re, user(pinned) or "")
+    ok &= check("the login gets -session-<id>-sessTime-30 appended",
+                bool(m) and m.group(2) == "30")
+    ok &= check("the rest of the login, the password, host and port are kept",
+                user(pinned).startswith(login + "-session-")
+                and to_playwright(pinned)["password"] == pw_
+                and to_playwright(pinned)["server"]
+                == "http://na.proxy.2captcha.com:2334")
+    ok &= check("the minutes are the ones asked for",
+                user(pp.pin_session(gw, 45)).endswith("-sessTime-45"))
+    ok &= check("each pin draws a new id",
+                pp.pin_session(gw, 30) != pp.pin_session(gw, 30))
+    ok &= check("the rucaptcha brand's gateway is pinned too",
+                pp.session_pinned(pp.pin_session(
+                    gw.replace("na.proxy.2captcha.com", "eu.proxy.rucaptcha.com"), 30)))
+
+    group("...and left alone where pinning does not apply")
+    own = f"http://{login}-session-Abc123-sessTime-10:{pw_}@na.proxy.2captcha.com:2334"
+    ok &= check("a login that already names a session is used as given",
+                pp.pin_session(own, 30) == own)
+    timed = f"http://{login}-sessTime-10:{pw_}@na.proxy.2captcha.com:2334"
+    t = user(pp.pin_session(timed, 30))
+    ok &= check("a login with only -sessTime- keeps ITS duration and gains an id",
+                re.search(r"-session-[A-Za-z0-9]{12}-sessTime-10$", t) is not None
+                and t.count("-sessTime-") == 1)
+    ok &= check("0 minutes means do not pin", pp.pin_session(gw, 0) == gw)
+    for label, url in (
+            ("a proxy that is not a 2Captcha gateway",
+             f"http://{login}:{pw_}@exit.example.com:2334"),
+            ("a lookalike host that only CONTAINS the gateway name",
+             f"http://{login}:{pw_}@na.proxy.2captcha.com.example.net:2334"),
+            ("a gateway URL with no login (IP-whitelisted)",
+             "http://na.proxy.2captcha.com:2334")):
+        ok &= check(f"{label} is unchanged", pp.pin_session(url, 30) == url)
+
+    group("One exit for the whole run, the pre-check included")
+    saved_env = os.environ.pop(pp.SESSION_MINUTES_ENV, None)
+    try:
+        args = types.SimpleNamespace(proxy=gw, proxy_file=None,
+                                     proxy_rotate="per-run",
+                                     proxy_session_minutes=None)
+        pool = pp.from_args(args)
+        first = pool.current
+        ok &= check("from_args pins the single --proxy at the default 30 min",
+                    re.search(sid_re, user(first) or "") is not None
+                    and user(first).endswith("-sessTime-30"))
+        ok &= check("every later read of the exit is the SAME login",
+                    all(pool.current == first for _ in range(5)))
+        pool.advance("a block")
+        ok &= check("a one-exit pool does not re-mint under a live browser",
+                    pool.current == first)
+        seen = []
+        real = proxy_check.precheck
+        proxy_check.precheck = lambda url, target, timeout=0: (
+            seen.append(url) or proxy_check.ProxyCheck(
+                outcome="ok", status=200, detail="stub"))
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                proxy_check.gate(pool, "https://www.vrbo.com/search")
+        finally:
+            proxy_check.precheck = real
+        ok &= check("the pre-check goes out on the browser's pinned login",
+                    seen == [first])
+        ok &= check("a second run gets a different session",
+                    pp.from_args(args).current != first)
+        args.proxy_session_minutes = 0
+        ok &= check("--proxy-session-minutes 0 leaves the login as given",
+                    pp.from_args(args).current == gw)
+        args.proxy_session_minutes = None
+        os.environ[pp.SESSION_MINUTES_ENV] = "15"
+        ok &= check(f"{pp.SESSION_MINUTES_ENV} is read when the flag is absent",
+                    user(pp.from_args(args).current).endswith("-sessTime-15"))
+        os.environ[pp.SESSION_MINUTES_ENV] = "soon"
+        try:
+            pp.from_args(args)
+            code = 0
+        except SystemExit as e:
+            code = e.code
+        ok &= check(f"a bad {pp.SESSION_MINUTES_ENV} exits instead of guessing",
+                    isinstance(code, str) and pp.SESSION_MINUTES_ENV in code)
+        os.environ.pop(pp.SESSION_MINUTES_ENV, None)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "proxies.txt")
+            other = gw.replace("acct1", "acct2")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"{gw}\n{gw}\n{other}\n")
+            fargs = types.SimpleNamespace(proxy=None, proxy_file=path,
+                                          proxy_rotate="per-page",
+                                          proxy_session_minutes=None)
+            with contextlib.redirect_stderr(io.StringIO()):
+                fpool = pp.from_args(fargs)
+            ids = {re.search(sid_re, user(u)).group(1) for u in fpool.proxies}
+            ok &= check("a repeated line stays ONE exit (deduplicated before pinning)",
+                        len(fpool) == 2)
+            ok &= check("each exit of a file gets its own session id",
+                        len(ids) == 2)
+            a = fpool.current
+            fpool.advance("a block")
+            ok &= check("rotation moves to another entry's own session",
+                        fpool.current != a and pp.session_pinned(fpool.current))
+            fpool.advance("again")
+            ok &= check("...and coming back finds the first exit unchanged",
+                        fpool.current == a)
+    finally:
+        if saved_env is None:
+            os.environ.pop(pp.SESSION_MINUTES_ENV, None)
+        else:
+            os.environ[pp.SESSION_MINUTES_ENV] = saved_env
+
+    group("The sidecar says whether the run was pinned, never the id")
+    sid = re.search(sid_re, user(first)).group(1)
+    fields = pp.session_fields(types.SimpleNamespace(current=first), {"a": 1})
+    ok &= check("proxy_session_pinned is true on a pinned exit",
+                fields == {"a": 1, "proxy_session_pinned": True})
+    ok &= check("the session id is not in the sidecar or the log mask",
+                sid not in json.dumps(fields) and sid not in mask(first))
+    ok &= check("false without a proxy",
+                pp.session_fields(None) == {"proxy_session_pinned": False})
+    ok &= check("false on an unpinned gateway login",
+                pp.session_fields(types.SimpleNamespace(current=gw))
+                == {"proxy_session_pinned": False})
+    ok &= check("false where the engine cannot send the login",
+                pp.session_fields(types.SimpleNamespace(current=first),
+                                  login_sent=False)
+                == {"proxy_session_pinned": False})
+
+    group("--proxy-session-minutes is validated and wired into every engine")
+    parser = argparse.ArgumentParser()
+    pp.add_session_flag(parser)
+    for bad in ("-1", "121", "half"):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            try:
+                parser.parse_args(["--proxy-session-minutes", bad])
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        ok &= check(f"{bad!r} is refused with exit 2 naming the flag",
+                    code == 2 and "--proxy-session-minutes" in err.getvalue())
+    ok &= check("0 and 120 are accepted",
+                parser.parse_args(["--proxy-session-minutes", "0"]).proxy_session_minutes == 0
+                and parser.parse_args(["--proxy-session-minutes", "120"]).proxy_session_minutes == 120)
+    for engine in ENGINES:
+        src = open(os.path.join(REPO_ROOT, f"{engine}.py"), encoding="utf-8").read()
+        ok &= check(f"{engine} adds the flag", "    add_session_flag(p)\n" in src)
+        want = ("session_fields(pool, extra, login_sent=False)"
+                if engine == "selenium_scraper" else "session_fields(pool, extra)\n")
+        ok &= check(f"{engine} records proxy_session_pinned"
+                    f"{' (false: Selenium strips the login)' if engine == 'selenium_scraper' else ''}",
+                    want in src and src.index(want.rstrip()) <
+                    src.index("extra = proxy_meter.finish(args, extra)"))
     return ok
 
 
@@ -3355,12 +3530,16 @@ def _navigation_mock(engine, session):
     return session.driver.get
 
 
-def _drive_budget_run(engine, tmp, rows_on_page_1):
+def _drive_budget_run(engine, tmp, rows_on_page_1, proxy=None):
     """scrape() with the page fetch faked: page 1 spends past the budget,
-    page 2 goes through the meter's check like a real fetch does."""
+    page 2 goes through the meter's check like a real fetch does.
+
+    `proxy` replaces the closed local port; the pre-check is then stubbed
+    out, so no request leaves the machine for that host."""
     import proxy_meter
     from unittest import mock
-    args = _engine_args(engine, tmp, "http://127.0.0.1:" + str(_closed_port()),
+    args = _engine_args(engine, tmp,
+                        proxy or "http://127.0.0.1:" + str(_closed_port()),
                         "--pages", "3", "--proxy-budget-mb", "0.01",
                         "--delay", "0", "--format", "json")
     calls = []
@@ -3381,6 +3560,9 @@ def _drive_budget_run(engine, tmp, rows_on_page_1):
         stack.enter_context(mock.patch.object(engine, "_fetch_one_page",
                                               side_effect=fake_fetch))
         stack.enter_context(mock.patch.object(engine.time, "sleep"))
+        if proxy:
+            stack.enter_context(mock.patch.object(
+                engine.proxy_check, "gate", return_value=None))
         buf = stack.enter_context(_captured_output())
         try:
             rc = engine.scrape(args)
@@ -3455,6 +3637,20 @@ def test_proxy_meter_in_the_engines(skips):
                     rc == 5 and not meta
                     and attempt.get("stop_reason") == "proxy_budget_exceeded"
                     and attempt.get("proxy_bytes") == 20_000)
+        gw = "http://acct-zone-custom-region-US:" + "pw" + "@na.proxy.2captcha.com:2334"
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, calls, meta, attempt, log = _drive_budget_run(
+                engine, tmp, True, proxy=gw)
+        want = name != "selenium_scraper"
+        ok &= check(f"{name}: a run through an unpinned gateway login records "
+                    f"proxy_session_pinned={want} and never the id",
+                    meta.get("proxy_session_pinned") is want
+                    and not re.search(r"-session-[A-Za-z0-9]{12}",
+                                      json.dumps(meta) + log))
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, calls, meta, attempt, log = _drive_budget_run(engine, tmp, True)
+        ok &= check(f"{name}: ...and false through a proxy that is not a gateway",
+                    meta.get("proxy_session_pinned") is False)
     return ok
 
 
@@ -3541,6 +3737,7 @@ def main() -> int:
     ok &= test_diff()
     ok &= test_env_config()
     ok &= test_proxy_pool()
+    ok &= test_proxy_sticky_session()
     ok &= test_credentials_never_reach_a_log()
     ok &= test_engine_parity(skips)
     ok &= test_no_undefined_names()

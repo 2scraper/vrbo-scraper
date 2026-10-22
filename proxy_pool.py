@@ -25,10 +25,15 @@ down and relaunches rather than swapping the proxy under a live session.
 
 from __future__ import annotations
 
+import argparse
 import logging
+import os
 import random
+import re
+import secrets
+import string
 from typing import List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger("proxy_pool")
 
@@ -281,6 +286,156 @@ class ProxyPool:
         return self.rotate == "per-page"
 
 
+# ---------------------------------------------------------------------------
+# One sticky exit per run on a 2Captcha residential gateway
+# ---------------------------------------------------------------------------
+# A gateway login with no session segment (`<id>-zone-custom-region-US`) may
+# be answered from a different residential address on every connection. A
+# results walk is one browser session that turns pages with a button press,
+# so an exit that changes between page 1 and page 3 replays page 1's cookies
+# from a new address mid-walk. The gateway pins an exit when the login
+# carries `-session-<id>`, for `-sessTime-<minutes>`. So when the login has no session, one id is
+# appended for the whole run, once, before any browser exists, and every
+# connection of the run (the pre-check included) uses that same login.
+#
+# A login that already names a session is the caller's choice and is left
+# exactly as given. Rotation to another pool entry is a new browser on that
+# entry's own session; the proxy under a live browser is never changed.
+_GATEWAY_SUFFIXES = (".proxy.2captcha.com", ".proxy.rucaptcha.com")
+_SESSION_RE = re.compile(r"-session-[A-Za-z0-9]+")
+_SESSTIME_RE = re.compile(r"-sessTime-\d+")
+_SESSION_CHARS = string.ascii_letters + string.digits
+_SESSION_LEN = 12
+DEFAULT_SESSION_MINUTES = 30
+# The vendor's residential dashboard offers an IP duration up to 120 minutes
+# (checked 2026-10-22); a longer value would be a pin the gateway may not keep.
+MAX_SESSION_MINUTES = 120
+SESSION_MINUTES_ENV = "VRBO_PROXY_SESSION_MINUTES"
+
+
+def is_2captcha_gateway(url: Optional[str]) -> bool:
+    """Is this proxy URL one of 2Captcha's residential gateways?"""
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host.endswith(_GATEWAY_SUFFIXES)
+
+
+def session_pinned(url: Optional[str]) -> bool:
+    """Does this gateway URL's login carry a sticky-session segment?"""
+    if not is_2captcha_gateway(url):
+        return False
+    try:
+        return bool(_SESSION_RE.search(urlparse(url).username or ""))
+    except ValueError:
+        return False
+
+
+def _session_minutes_arg(value) -> int:
+    try:
+        minutes = int(str(value).strip())
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected whole minutes from 0 to {MAX_SESSION_MINUTES}, got "
+            f"{value!r}") from None
+    if not 0 <= minutes <= MAX_SESSION_MINUTES:
+        raise argparse.ArgumentTypeError(
+            f"expected whole minutes from 0 to {MAX_SESSION_MINUTES}, got "
+            f"{minutes}")
+    return minutes
+
+
+def add_session_flag(parser) -> None:
+    parser.add_argument(
+        "--proxy-session-minutes", type=_session_minutes_arg, default=None,
+        metavar="N",
+        help=(f"On a 2Captcha residential gateway (a host under "
+              f"{' or '.join(_GATEWAY_SUFFIXES)}) whose login names no "
+              f"session, append one random session id to the login for this "
+              f"run, held for N minutes, so every page of the run leaves "
+              f"from one exit (default {DEFAULT_SESSION_MINUTES}; 0 = do not "
+              f"pin; at most {MAX_SESSION_MINUTES}; also "
+              f"{SESSION_MINUTES_ENV}). A login that already carries "
+              f"-session- is used as given."))
+
+
+def session_minutes(args) -> int:
+    """The flag, else the environment, else the default. A bad environment
+    value exits 2 rather than silently falling back."""
+    value = getattr(args, "proxy_session_minutes", None)
+    if value is None or value == "":
+        value = os.environ.get(SESSION_MINUTES_ENV, "").strip()
+        if not value:
+            return DEFAULT_SESSION_MINUTES
+    if isinstance(value, int):
+        return value
+    try:
+        return _session_minutes_arg(value)
+    except argparse.ArgumentTypeError as e:
+        raise SystemExit(f"error: {SESSION_MINUTES_ENV}: {e}") from None
+
+
+def _new_session_id(rng) -> str:
+    return "".join(rng.choice(_SESSION_CHARS) for _ in range(_SESSION_LEN))
+
+
+def pin_session(url: str, minutes: int, rng=None) -> str:
+    """`url` with a sticky session appended to its gateway login, or `url`
+    unchanged when it is not a gateway, has no login, already names a
+    session, or `minutes` is 0. Only the login changes."""
+    if minutes <= 0 or not is_2captcha_gateway(url):
+        return url
+    parts = urlparse(url)
+    login = parts.username or ""
+    if not login or _SESSION_RE.search(login):
+        return url
+    sid = _new_session_id(rng or secrets.SystemRandom())
+    if _SESSTIME_RE.search(login):
+        # The caller chose a duration; keep it and add only the id, in the
+        # position the vendor's own generator puts it.
+        new_login = _SESSTIME_RE.sub(
+            lambda m: f"-session-{sid}{m.group(0)}", login, count=1)
+    else:
+        new_login = f"{login}-session-{sid}-sessTime-{minutes}"
+    port = f":{parts.port}" if parts.port else ""
+    password = parts.password
+    netloc = (f"{new_login}:{password}@{parts.hostname}{port}"
+              if password is not None else f"{new_login}@{parts.hostname}{port}")
+    return urlunparse((parts.scheme, netloc, parts.path, parts.params,
+                       parts.query, parts.fragment))
+
+
+def _pin_all(proxies: List[str], minutes: int, rng=None) -> List[str]:
+    """Pin every gateway entry, each on its own session id, once."""
+    rng = rng or secrets.SystemRandom()
+    out = [pin_session(p, minutes, rng) for p in proxies]
+    appended = sum(1 for a, b in zip(proxies, out) if a != b)
+    kept = sum(1 for a in proxies if session_pinned(a))
+    if appended:
+        logger.info(
+            "Pinned %d 2Captcha gateway exit(s) to a sticky session for %d "
+            "min, so each page of the run leaves from the same address "
+            "(--proxy-session-minutes 0 turns this off).", appended, minutes)
+    if kept:
+        logger.info("%d proxy login(s) already name a session; used as "
+                    "given.", kept)
+    return out
+
+
+def session_fields(pool, extra: Optional[dict] = None,
+                   login_sent: bool = True) -> dict:
+    """Merge `proxy_session_pinned` into the sidecar's extra. True when the
+    exit the run ended on is a gateway login carrying a session and the
+    engine actually sends that login. The id itself is never recorded."""
+    extra = dict(extra or {})
+    extra["proxy_session_pinned"] = bool(
+        pool and login_sent and session_pinned(pool.current))
+    return extra
+
+
 def from_args(args) -> Optional[ProxyPool]:
     """Build a pool from --proxy-file / --proxy, or None if neither is set.
 
@@ -291,6 +446,7 @@ def from_args(args) -> Optional[ProxyPool]:
     proxy_file = getattr(args, "proxy_file", None)
     single = getattr(args, "proxy", None)
     rotate = getattr(args, "proxy_rotate", "per-run")
+    minutes = session_minutes(args)
 
     if proxy_file:
         if single:
@@ -299,13 +455,19 @@ def from_args(args) -> Optional[ProxyPool]:
         proxies = load_proxy_file(proxy_file)
         logger.info("Loaded %d proxy exit(s) from %s, rotation: %s",
                     len(proxies), proxy_file, rotate)
-        return ProxyPool(proxies, rotate=rotate,
+        pool = ProxyPool(proxies, rotate=rotate,
                          shuffle=getattr(args, "proxy_shuffle", False))
+        # After the pool's own de-duplication: a repeated line is still one
+        # exit and must not become two by getting two session ids.
+        pool._proxies = _pin_all(pool._proxies, minutes)
+        return pool
 
     if single:
         entry = parse_proxy_line(single, source="--proxy")
         if entry is None:
             raise ProxyError("--proxy was given but is empty")
-        return ProxyPool([entry], rotate="per-run")
+        pool = ProxyPool([entry], rotate="per-run")
+        pool._proxies = _pin_all(pool._proxies, minutes)
+        return pool
 
     return None
