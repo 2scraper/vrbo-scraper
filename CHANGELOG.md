@@ -75,6 +75,27 @@ that is a fix, and the release notes lead with it.
 
 ### Fixed
 
+- A results page that stops filling partway now gets the rest of its cards
+  in all three engines. Below the last card the grid keeps loading
+  placeholders (`data-stid="search-listing-placeholder"`). It fills them only
+  when they scroll into view, and scrolling to the bottom again moves
+  nothing. The 2026-10-20 and 10-21 canaries stopped this way: 6 placeholders
+  under 13 cards on page 1 with no proxy, and under 19 cards on pages 2 and 3
+  through a residential exit. Each run ended as `cards_missing`, exit 6.
+  - When count and height hold still for three rounds with placeholders
+    showing, the scraper scrolls the container to the top and back down a
+    screen at a time. It does this at most three times per page.
+  - Measured 2026-10-22 without a proxy: a 13-card stall held for eight
+    rounds, and one nudge took it to 50 of 50.
+  - Each page's `scroll` entry in the sidecar now records `nudges` and
+    `placeholders_left`, and the warning says which case it was.
+  - New sanitized fixture `LISTING_LAZY_TAIL`, cut from the stalled canary
+    capture. There are offline checks for the stall, the bound, short pages,
+    the walk and each engine's wiring.
+- CI only: the canary's three-page walk through `VRBO_PROXY` passes
+  `--block-media`. A full page loads about 100 images (1.8 MB measured), and
+  the 2026-10-21 walk had already used 9.6 MB of its 10 MB cap with two short
+  pages.
 - The pyppeteer and Selenium proxy meter counts only `http://` / `https://` requests and responses that came over the network. Chrome's own loads (the `chrome://` new-tab page, `data:`, `blob:`), cache hits (`requestServedFromCache`, `fromDiskCache`, `fromPrefetchCache`, `fromServiceWorker`) and Chrome's error page count nothing. A sibling repo's Selenium run had counted about 2.8 MB of new-tab scripts while its proxy carried about 6 KB. The pyppeteer block sent once the budget is spent now reaches the page's own event loop even when the budget runs out on another thread.
 
 ## [0.3.0] — 2026-10-15

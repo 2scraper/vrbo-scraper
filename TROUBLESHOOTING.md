@@ -76,12 +76,21 @@ parse got 40, so ten cards never loaded.
 
 Almost always the scroll did not finish. First paint on this site is 3 to 18
 cards and the rest arrive by scrolling an **inner** container
-(`.scrollable-result-section`) — the page body never scrolls at all. If the
-batch behind a scroll is throttled, the grid stops growing early.
+(`.scrollable-result-section`) — the page body never scrolls at all.
 
-Same remedies as above: slow down, or use a proxy pool. Re-run with
-`--dump-html` and open the snapshot to confirm the cards really were absent
-rather than unparsed.
+Below the last card the grid keeps a block of loading placeholders
+(`data-stid="search-listing-placeholder"`) and fills it only when that block
+comes **into** view. Scrolling to the bottom again and again does not do that,
+because nothing moves after the first time. When the grid stops with those
+placeholders still showing, the scraper scrolls the container back to the
+top and down again a screen at a time, up to three times. The sidecar's
+`scroll` entry for each page records `nudges` and `placeholders_left`. If
+`placeholders_left` is above 0, the grid never filled in even after the
+nudges. If it is 0, the site served a short page.
+
+If it persists: slow down, or use a proxy pool. Re-run with `--dump-html`
+and open the snapshot to confirm the cards really were absent rather than
+unparsed.
 
 ---
 

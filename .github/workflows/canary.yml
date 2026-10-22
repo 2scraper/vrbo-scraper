@@ -158,14 +158,18 @@ jobs:
         # Three pages, not two: one turn only proves the button was found
         # once; the second turn is where a cursor that does not advance shows
         # up. --delay 15 because the turn's /graphql POST is rate limited
-        # separately from the HTML.
+        # separately from the HTML. --block-media because a full page loads
+        # about 100 images (1.8 MB measured 2026-10-22, no proxy): the
+        # 2026-10-21 walk used 9.6 MB of the 10 MB cap with two of its three
+        # pages only 19 cards deep, so three full pages with images would
+        # not fit. image_url is not one of the columns this job checks.
         run: |
           set +e
           start=$(date -u -d '+45 days' +%F)
           end=$(date -u -d '+47 days' +%F)
           url="https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=${start}&endDate=${end}&adults=2"
           xvfb-run -a python3 playwright_scraper.py --url "$url" \
-            --pages 3 --delay 15 --retries 4 --proxy-budget-mb 10 \
+            --pages 3 --delay 15 --retries 4 --proxy-budget-mb 10 --block-media \
             --out canary_walk --dump-html canary_walk.html
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 

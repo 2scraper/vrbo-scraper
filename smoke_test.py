@@ -650,9 +650,9 @@ def test_scroll_loop():
         ok &= check(f"{engine} falls back to the window if it is absent",
                     "document.body.scrollHeight" in src)
 
-    # A pause is not an ending. This is the loop that settled at 19 cards
-    # against a counter saying 50 on the first live run, because the next
-    # batch was in flight behind a throttled /graphql POST.
+    # A pause is not an ending: a grid that is still growing slowly below a
+    # known counter is waited for. (The stall at 19 of 50 itself turned out
+    # to be the lazy tail; see test_grid_lazy_tail.)
     counts = [3, 3, 3, 3, 3, 50, 50, 50, 50, 50, 50, 50]
     state = {"i": 0}
 
@@ -696,6 +696,135 @@ def test_scroll_loop():
                                    lambda ms: None, target=None)
     ok &= check("a forever-growing page is bounded by the round budget",
                 forever["n"] <= page_flow.SCROLL_MAX_ROUNDS * 2 + 2)
+    return ok
+
+
+class _LazyTailGrid:
+    """The stall measured on 2026-10-20/21/22: 13 cards and 6 placeholders,
+    count and height still, until the tail leaves the view and comes back.
+
+    `helps=False` is a grid a nudge does not fill (the bound must hold).
+    """
+    CLIENT = 683
+
+    def __init__(self, cards=13, target=50, helps=True, placeholders=6):
+        self.cards, self.target, self.helps = cards, target, helps
+        self.placeholders = placeholders
+        self.top, self.height = 4960, 5643
+        self.went_top = False
+        self.set_tops = []
+
+    def count(self, selector):
+        if selector == page_flow.PLACEHOLDER_SELECTOR:
+            return self.placeholders
+        return self.cards
+
+    def scroll_to_bottom(self):
+        self.top = self.height - self.CLIENT   # same value every time: no event
+
+    def geometry(self):
+        return (self.top, self.height, self.CLIENT)
+
+    def set_top(self, top):
+        self.set_tops.append(top)
+        self.top = top
+        if top == 0:
+            self.went_top = True
+        elif (self.went_top and self.helps
+              and top + self.CLIENT >= self.height - 2):
+            self.cards, self.placeholders = self.target, 0
+            self.height = 12837
+
+
+def test_grid_lazy_tail():
+    group("A grid stopped at its lazy tail is scrolled back through (real capture)")
+    ok = True
+    from bs4 import BeautifulSoup
+    sel = SELECTORS["grid_placeholder"]
+    stalled = FIXTURES["LISTING_LAZY_TAIL"]
+    n = len(BeautifulSoup(stalled, "html.parser").select(sel))
+    ok &= check(f"the stalled capture carries the site's placeholders ({n})", n == 6)
+    for name in ("LISTING_US", "LISTING_US_P2", "LISTING_DE", "LISTING_AU"):
+        n = len(BeautifulSoup(FIXTURES[name], "html.parser").select(sel))
+        ok &= check(f"a served grid carries none ({name}: {n})", n == 0)
+    rows = rows_of("LISTING_LAZY_TAIL")
+    ok &= check(f"it still parses its cut cards ({len(rows)})",
+                len(rows) == 2 and all(r.title and r.price for r in rows))
+    ok &= check("and its own counter says 48 more were owed",
+                page_flow.page_gap(stalled, len(rows)) == 48)
+
+    sleep = lambda ms: None  # noqa: E731
+    # The canary's stall, reproduced: without a nudge it stays at 13.
+    g = _LazyTailGrid()
+    got = page_flow.scroll_until_settled(g.count, g.scroll_to_bottom,
+                                         lambda: g.height, sleep, target=50)
+    ok &= check(f"without a nudge the loop stops at the stall ({got})", got == 13)
+
+    g, trace = _LazyTailGrid(), {}
+    got = page_flow.scroll_until_settled(
+        g.count, g.scroll_to_bottom, lambda: g.height, sleep, target=50,
+        nudge=lambda: page_flow.nudge_grid(g.geometry, g.set_top, sleep),
+        trace=trace)
+    ok &= check(f"with one it reaches the counter ({got}, {trace})",
+                got == 50 and trace == {"nudges": 1, "placeholders_left": 0})
+
+    g, trace = _LazyTailGrid(helps=False), {}
+    got = page_flow.scroll_until_settled(
+        g.count, g.scroll_to_bottom, lambda: g.height, sleep, target=50,
+        nudge=lambda: page_flow.nudge_grid(g.geometry, g.set_top, sleep),
+        trace=trace)
+    ok &= check(f"a nudge that never helps is bounded ({trace})",
+                got == 13 and trace["nudges"] == page_flow.SCROLL_MAX_NUDGES
+                and trace["placeholders_left"] == 6)
+    ok &= check("...and the log says the placeholders were still there",
+                "placeholders" in page_flow.unsettled_reason(trace))
+
+    g, trace = _LazyTailGrid(cards=19, placeholders=0), {}
+    page_flow.scroll_until_settled(
+        g.count, g.scroll_to_bottom, lambda: g.height, sleep, target=50,
+        nudge=lambda: page_flow.nudge_grid(g.geometry, g.set_top, sleep),
+        trace=trace)
+    ok &= check("a short page with no placeholder is not nudged",
+                trace == {"nudges": 0, "placeholders_left": 0})
+
+    g = _LazyTailGrid()
+    page_flow.nudge_grid(g.geometry, g.set_top, sleep)
+    tops = g.set_tops
+    ok &= check(f"a nudge goes to the top, then down a screen at a time "
+                f"to the bottom ({len(tops)} moves)",
+                tops[0] == 0 and tops == sorted(tops)
+                and all(b - a <= g.CLIENT for a, b in zip(tops, tops[1:]))
+                and len(tops) <= page_flow.NUDGE_MAX_STEPS + 1
+                and tops[-1] + g.CLIENT >= 5643 - 2)
+    moved = []
+    page_flow.nudge_grid(lambda: None, moved.append, sleep)
+    ok &= check("no container, no nudge", moved == [])
+
+    # Every engine passes the nudge, through its own named operations.
+    import types
+    for engine in ENGINES:
+        mod = _load_engine_copy(engine)
+        short = engine.split("_")[0]
+        g = _LazyTailGrid()
+        patches = {"_count": lambda _s, selector: g.count(selector),
+                   "_scroll_results": lambda _s: g.scroll_to_bottom(),
+                   "_results_height": lambda _s: g.height,
+                   "_results_geometry": lambda _s: g.geometry(),
+                   "_set_results_top": lambda _s, top: g.set_top(top),
+                   "_sleep": sleep}
+        missing = [k for k in patches if not hasattr(mod, k)
+                   and k != "_sleep"]
+        if missing:
+            ok &= check(f"{short}: has the named grid operations ({missing})", False)
+            continue
+        for k, v in patches.items():
+            setattr(mod, k, v)
+        session = types.SimpleNamespace(
+            page=types.SimpleNamespace(wait_for_timeout=sleep))
+        out = mod._scroll_the_grid(session, types.SimpleNamespace(), stalled, 1)
+        ok &= check(f"{short}: a stalled grid reaches its counter ({out})",
+                    out["reached"] == 50 and out["settled"]
+                    and out["nudges"] == 1 and out["placeholders_left"] == 0)
     return ok
 
 
@@ -3405,6 +3534,7 @@ def main() -> int:
     ok &= test_retries_zero_is_refused()
     ok &= test_page_flow_policy()
     ok &= test_scroll_loop()
+    ok &= test_grid_lazy_tail()
     ok &= test_throttle_is_not_completion()
     ok &= test_output_contract()
     ok &= test_writers_and_finish_run()

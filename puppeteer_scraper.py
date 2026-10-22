@@ -372,6 +372,31 @@ def _results_height(session) -> Optional[int]:
         return None
 
 
+def _results_geometry(session) -> Optional[tuple]:
+    """(scrollTop, scrollHeight, clientHeight) of the results container."""
+    try:
+        g = session.bridge.run(session.page.evaluate(
+            """(selector) => {
+                const el = document.querySelector(selector);
+                return el ? [el.scrollTop, el.scrollHeight, el.clientHeight] : null;
+            }""", SELECTORS["scroll_container"]))
+        return tuple(g) if g else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _set_results_top(session, top: int) -> None:
+    """Set the results container's scrollTop."""
+    try:
+        session.bridge.run(session.page.evaluate(
+            """(selector, top) => {
+                const el = document.querySelector(selector);
+                if (el) { el.scrollTop = top; }
+            }""", SELECTORS["scroll_container"], top))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("scroll failed: %s", e)
+
+
 def _first_card_href(session) -> Optional[str]:
     """The first result card's link, or None. The page-turn signal."""
     try:
@@ -482,24 +507,33 @@ def handle_captcha_if_present(session, args, *, budget) -> bool:
 def _scroll_the_grid(session, args, html: str, page_num: int) -> dict:
     target = page_flow.expected_cards(html)
     before = _count(session, page_flow.READY_SELECTOR_LISTING)
+    trace: dict = {}
     reached = page_flow.scroll_until_settled(
         lambda sel: _count(session, sel),
         lambda: _scroll_results(session),
         lambda: _results_height(session),
         _sleep,
         selector=page_flow.READY_SELECTOR_LISTING,
-        target=target)
+        target=target,
+        nudge=lambda: page_flow.nudge_grid(
+            lambda: _results_geometry(session),
+            lambda top: _set_results_top(session, top),
+            _sleep),
+        trace=trace)
     settled = target is None or reached >= target
     logger.info("Scrolled page %d: %d card(s) at first paint, %d after "
-                "scrolling%s.", page_num, before, reached,
-                f" (the page says it holds {target})" if target else "")
+                "scrolling%s%s.", page_num, before, reached,
+                f" (the page says it holds {target})" if target else "",
+                f", {trace['nudges']} nudge(s)" if trace.get("nudges") else "")
     if not settled:
         logger.warning(
             "Page %d settled at %d card(s) but its own counter says it holds "
-            "%d. Those %d are missing from this run.",
-            page_num, reached, target, target - reached)
+            "%d. Those %d are missing from this run — %s.",
+            page_num, reached, target, target - reached,
+            page_flow.unsettled_reason(trace))
     return {"first_paint": before, "reached": reached, "target": target,
-            "settled": settled}
+            "settled": settled, "nudges": trace.get("nudges", 0),
+            "placeholders_left": trace.get("placeholders_left")}
 
 
 def _fetch_one_page(session, args, pool, page_num: int,

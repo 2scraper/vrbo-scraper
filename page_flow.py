@@ -162,15 +162,58 @@ SCROLL_STABLE_ROUNDS = 3
 SCROLL_MAX_ROUNDS = 20
 # How many stable rounds to tolerate while the page's own counter says there
 # are still cards to come. Earned on the first live run of this engine: page
-# 2 settled at 19 cards against a counter that said 50, because the next
-# batch was in flight behind a throttled `/graphql` POST and three quiet
-# rounds went by while it was. A pause is not an ending when the site has
-# told us how many there are — so the stable-round heuristic is the
-# termination condition only for a page that published no counter, and below
-# a known target the loop is twice as patient before giving up.
+# 2 settled at 19 cards against a counter that said 50. That was read at the
+# time as a batch in flight behind a throttled `/graphql` POST. The 2026-10-22
+# measurement found the lazy tail instead (see PLACEHOLDER_SELECTOR): no
+# request is behind those cards. A pause is still not an ending when the site
+# has told us how many there are, so below a known target the loop is twice
+# as patient before giving up.
 SCROLL_STABLE_ROUNDS_BELOW_TARGET = 6
 # The next batch takes longer to arrive than a single pause.
 SCROLL_PAUSE_MS = 1_600
+
+# The grid's lazy tail. Below the last rendered card the site keeps a block
+# of placeholder cards and fills it only when it scrolls INTO view. Scrolling
+# the container to its bottom puts it in view once; after that every further
+# "scroll to bottom" sets the same scrollTop, nothing moves, and the grid
+# waits for good. Measured: the 2026-10-20 and 10-21 canaries stopped with 6
+# placeholders under 13 cards (page 1, no proxy) and 19 cards (pages 2 and 3,
+# residential exit) while count and height held still; on 2026-10-22, from a
+# plain connection, the same 13-card stall held for eight rounds and ONE
+# nudge (back to the top, then down a screen at a time) took it to 50 of 50.
+# No /graphql call is behind those cards, so waiting longer cannot help.
+PLACEHOLDER_SELECTOR = SELECTORS["grid_placeholder"]
+# Bounded: a nudge that does not help three times will not on the fourth.
+SCROLL_MAX_NUDGES = 3
+NUDGE_TOP_PAUSE_MS = 800
+NUDGE_STEP_PAUSE_MS = 300
+NUDGE_STEP_SHARE = 0.8        # of the container's visible height
+NUDGE_MAX_STEPS = 40          # a 12,000px grid in ~550px steps is ~22
+
+
+def nudge_grid(geometry: Callable[[], Optional[tuple]],
+               set_top: Callable[[int], None],
+               sleep: Callable[[int], None]) -> None:
+    """Move the lazy tail out of view and walk it back in, a screen at a time.
+
+    `geometry` returns the container's (scrollTop, scrollHeight,
+    clientHeight), or None when there is no container; `set_top` sets its
+    scrollTop. Both are named driver operations, so this reads the same in
+    every engine.
+    """
+    if not geometry():
+        return
+    set_top(0)
+    sleep(NUDGE_TOP_PAUSE_MS)
+    for _ in range(NUDGE_MAX_STEPS):
+        g = geometry()
+        if not g:
+            return
+        top, height, client = (int(v or 0) for v in g)
+        if top + client >= height - 2:
+            return
+        set_top(min(height, top + max(1, int(client * NUDGE_STEP_SHARE))))
+        sleep(NUDGE_STEP_PAUSE_MS)
 
 
 def scroll_until_settled(count: Callable[[str], int],
@@ -179,7 +222,9 @@ def scroll_until_settled(count: Callable[[str], int],
                          sleep: Callable[[int], None],
                          selector: str = READY_SELECTOR_LISTING,
                          target: Optional[int] = None,
-                         max_rounds: int = SCROLL_MAX_ROUNDS) -> int:
+                         max_rounds: int = SCROLL_MAX_ROUNDS,
+                         nudge: Optional[Callable[[], None]] = None,
+                         trace: Optional[dict] = None) -> int:
     """Scroll the results container until the grid stops growing.
 
     Requires the card count AND the container height to hold still for
@@ -192,19 +237,40 @@ def scroll_until_settled(count: Callable[[str], int],
     NOT reaching it does not end anything early, because the gap is reported
     rather than chased (the rank-gap arithmetic).
 
+    `nudge`, when given, is called (at most `SCROLL_MAX_NUDGES` times) when
+    the grid has held still for `SCROLL_STABLE_ROUNDS` rounds with the site's
+    own placeholders still on the page. See PLACEHOLDER_SELECTOR. Its rounds
+    do not come out of the ordinary budget.
+
+    `trace`, when given, receives `nudges` and `placeholders_left`.
+
     Returns the final card count.
     """
     seen = count(selector)
     height = results_height()
-    stable = 0
-    for _ in range(max_rounds):
+    stable = nudges = rounds = 0
+    budget = max_rounds + (SCROLL_MAX_NUDGES * SCROLL_STABLE_ROUNDS if nudge else 0)
+    while rounds < budget:
         if target is not None and seen >= target:
             break
         scroll_results()
         sleep(SCROLL_PAUSE_MS)
+        rounds += 1
         now, now_height = count(selector), results_height()
         if now == seen and now_height == height:
             stable += 1
+            if (nudge is not None and nudges < SCROLL_MAX_NUDGES
+                    and stable >= SCROLL_STABLE_ROUNDS
+                    and count(PLACEHOLDER_SELECTOR) > 0):
+                nudges += 1
+                logger.info("The grid stopped at %d card(s) with the site's "
+                            "loading placeholders still showing; scrolling it "
+                            "back through (nudge %d/%d).", now, nudges,
+                            SCROLL_MAX_NUDGES)
+                nudge()
+                stable = 0
+                seen, height = count(selector), results_height()
+                continue
             # More patience while the site's own counter says cards are
             # still owed. See SCROLL_STABLE_ROUNDS_BELOW_TARGET.
             allowed = (SCROLL_STABLE_ROUNDS_BELOW_TARGET
@@ -215,7 +281,24 @@ def scroll_until_settled(count: Callable[[str], int],
         else:
             stable = 0
         seen, height = now, now_height
+    if trace is not None:
+        trace["nudges"] = nudges
+        trace["placeholders_left"] = count(PLACEHOLDER_SELECTOR)
     return seen
+
+
+def unsettled_reason(trace: dict) -> str:
+    """Why a page stopped short of its counter, in words for the log."""
+    left = trace.get("placeholders_left")
+    if left:
+        return (f"the site's own loading placeholders ({left}) were still on "
+                f"the page after {trace.get('nudges', 0)} nudge(s), so the "
+                f"grid never filled in")
+    if left == 0:
+        return ("no loading placeholder was left on the page, so the site "
+                "served a short page or the grid was still filling")
+    return ("the grid was still filling when the scroll budget ran out, or "
+            "the site served a short page")
 
 
 # ---------------------------------------------------------------------------
