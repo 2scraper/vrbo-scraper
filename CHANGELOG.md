@@ -10,6 +10,14 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+> **Behaviour change.** A page turn that gets no grid back (the site's
+> `/graphql` answered HTTP 429, with no `Retry-After`) is now retried
+> **once** in all three engines, after a random 30-60 s pause, in the same
+> browser session and exit. A run that used to end `next_page_throttled`
+> (exit 6) at once can now take up to about two minutes longer at that
+> page, and goes on to the next page when the retry succeeds.
+> `--throttle-wait-seconds 0` restores the old behaviour.
+
 > **Behaviour change.** On a 2Captcha residential gateway
 > (`*.proxy.2captcha.com`, `*.proxy.rucaptcha.com`), a proxy login with no
 > `-session-` segment now gets one random `-session-<id>-sessTime-30`
@@ -34,6 +42,18 @@ that is a fix, and the release notes lead with it.
 
 ### Added
 
+- `--throttle-wait-seconds` in all three engines (default 45, `0` = no
+  retry): one paced retry of a page turn that got no grid back. The pause is
+  a random 2/3 to 4/3 of the value. The proxy budget is checked before the
+  pause and again before the second press, so a spent budget never buys a
+  retry. A grid that arrives during the pause counts as the turn and is not
+  pressed again. The listing sidecar gains `throttle_retries` (retries made
+  in the run). Measured on the 2026-10-22 canary walk (run 39858684619):
+  pages 1 and 2 turned in 2 s, then the press for page 3 got one `/graphql`
+  429 with no `Retry-After`, and the grid stayed empty for 60 s. Offline
+  checks drive each engine's real page fetch with a stubbed grid: 429 then
+  success reads the page, 429 twice ends exit 6 after exactly two presses,
+  and a budget spent by the failed turn makes no second press.
 - `--proxy-session-minutes` in all three engines, and
   `VRBO_PROXY_SESSION_MINUTES` in `.env.example`. The session id is drawn
   once per run, before the pre-check; with `--proxy-file`, each gateway line
@@ -55,9 +75,10 @@ that is a fix, and the release notes lead with it.
     `proxy_budget_exceeded`, and a closing log line
     `Proxy traffic: X.X MB of Y MB budget`.
   - `--proxy-budget-mb`, and `VRBO_PROXY_BUDGET_MB` (in `.env.example`).
-- CI only: both canary runs pass `--proxy-budget-mb 10`. Each one writes its
-  proxy traffic to the step summary, and fails with
-  `::error::stopped: proxy budget 10 MB exceeded` when the cap was hit
+- CI only: both canary runs pass a `--proxy-budget-mb` (10 for the first
+  page, 15 for the walk; see Changed). Each one writes its proxy traffic to
+  the step summary, and fails with
+  `::error::stopped: proxy budget N MB exceeded` when the cap was hit
   (`.github/proxy_traffic.py`).
 - Offline checks:
   - The meter against known CDP and Playwright sizes.
@@ -88,6 +109,13 @@ that is a fix, and the release notes lead with it.
 
 ### Changed
 
+- CI only: the canary's three-page walk through `VRBO_PROXY` passes
+  `--proxy-budget-mb 15`; the scraper's default stays 10. With
+  `--block-media` the 2026-10-22 walk used 8.7 MB for pages 1 and 2 at 50 of
+  50 cards each, so a full third page and a paced retry would not fit under
+  10. The step summary already reported each run against the budget in its
+  own sidecar (`proxy_budget_bytes`); its docstring said "of 10 MB" and now
+  says so, and the canary checks cover a 15 MB run and a run with no cap.
 - CI only: the whole canary, free and paid jobs alike, now runs weekly (Mondays 06:20 UTC) and on a manual dispatch; the daily schedule is removed.
 
 ### Fixed

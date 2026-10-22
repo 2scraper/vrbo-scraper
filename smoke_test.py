@@ -50,7 +50,7 @@ import os
 import re
 import sys
 import tempfile
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -1444,11 +1444,12 @@ def test_engine_parity(skips):
         "playwright_scraper": {"--locale", "--fingerprint", "--fp-tags",
                                "--fp-country", "--browser-channel",
                                "--cdp-connect-timeout",
-                               "--block-retry-delay"},
+                               "--block-retry-delay", "--throttle-wait-seconds"},
         "selenium_scraper": {"--locale", "--fingerprint", "--fp-tags",
-                             "--fp-country", "--block-retry-delay"},
+                             "--fp-country", "--block-retry-delay",
+                             "--throttle-wait-seconds"},
         "puppeteer_scraper": {"--chromium-path", "--cdp-connect-timeout",
-                              "--block-retry-delay"},
+                              "--block-retry-delay", "--throttle-wait-seconds"},
     }
     for engine, extra in documented_extra.items():
         actual = flagsets[engine] - contract
@@ -2255,7 +2256,8 @@ def test_numeric_flags_are_validated():
             ("--pages", int, 1, "0", "2"), ("--concurrency", int, 1, "0", "1"),
             ("--proxy-block-retries", int, 0, "-1", "0"),
             ("--delay", float, 0, "-1", "0"), ("--retry-delay", float, 0, "-0.5", "1.5"),
-            ("--block-retry-delay", float, 0, "-30", "30")):
+            ("--block-retry-delay", float, 0, "-30", "30"),
+            ("--throttle-wait-seconds", float, 0, "-1", "0")):
         parse = page_flow.at_least(minimum, kind)
         ok &= check(f"{flag}: {good} is accepted", parse(good) == kind(good))
         ok &= check(f"{flag}: {bad} is refused",
@@ -2267,6 +2269,7 @@ def test_numeric_flags_are_validated():
              '"--concurrency", type=page_flow.at_least(1)',
              '"--retry-delay", type=page_flow.at_least(0, float)',
              '"--block-retry-delay", type=page_flow.at_least(0, float)',
+             '"--throttle-wait-seconds", type=page_flow.at_least(0, float)',
              '"--proxy-block-retries", type=page_flow.at_least(0)')
     for engine in ENGINES:
         src = open(os.path.join(REPO_ROOT, f"{engine}.py"), encoding="utf-8").read()
@@ -3663,9 +3666,26 @@ def test_canary_reports_proxy_traffic():
     steps = re.split(r"\n\s*- (?:name|uses):", text)
     runs = [s for s in steps if re.search(r"\w+_scraper\.py", s)
             and "--out" in s]
-    ok &= check(f"every canary scrape passes --proxy-budget-mb 10 "
-                f"({len(runs)} run step(s))", bool(runs) and all(
-                    "--proxy-budget-mb 10" in r for r in runs))
+    budgets = {}
+    for r in runs:
+        code = "\n".join(line for line in r.splitlines()
+                         if not line.lstrip().startswith("#"))
+        for out_ in re.findall(r"--out\s+(\S+)", code):
+            budgets[out_] = re.findall(r"--proxy-budget-mb\s+(\S+)", code)
+    # The walk carries three full pages and a paced retry of a throttled
+    # turn: 8.7 MB for two pages measured 2026-10-22 with --block-media, so
+    # 15 there. The first page has no proxy and keeps the default 10.
+    ok &= check(f"every canary scrape passes one --proxy-budget-mb: the "
+                f"first page 10, the walk 15 ({budgets})",
+                budgets == {"canary_run": ["10"], "canary_walk": ["15"]})
+    walk = [r for r in runs if "canary_walk" in r]
+    ok &= check("the walk does not switch the throttle retry off",
+                bool(walk) and "--throttle-wait-seconds 0" not in walk[0])
+    ok &= check("no summary step passes a fixed budget",
+                all(re.search(r"proxy_traffic\.py\s+\S+\s+\S+\s*\n", s + "\n")
+                    and not re.search(r"proxy_traffic\.py\s+\S+\s+\S+\s+\d",
+                                      s)
+                    for s in steps if ".github/proxy_traffic.py" in s))
     outs = set()
     for r in runs:
         outs.update(re.findall(r"--out\s+(\S+)", r))
@@ -3689,6 +3709,15 @@ def test_canary_reports_proxy_traffic():
                 ("under", {"proxy_bytes": 2_340_000,
                            "proxy_budget_bytes": 10_000_000,
                            "proxy_budget_exceeded": False}),
+                ("walk15", {"proxy_bytes": 8_666_843,
+                            "proxy_budget_bytes": 15_000_000,
+                            "proxy_budget_exceeded": False}),
+                ("over15", {"proxy_bytes": 15_100_000,
+                            "proxy_budget_bytes": 15_000_000,
+                            "proxy_budget_exceeded": True}),
+                ("nocap", {"proxy_bytes": 1_000_000,
+                           "proxy_budget_bytes": None,
+                           "proxy_budget_exceeded": False}),
                 ("plain", {"status": "complete"}),
                 ("missing", None)):
             out = os.path.join(tmp, case)
@@ -3710,9 +3739,309 @@ def test_canary_reports_proxy_traffic():
                 results["under"][0] == 0
                 and "**live/under**: proxy traffic 2.3 MB of 10 MB" in written
                 and "**live/over**: proxy traffic 12.3 MB of 10 MB" in written)
+    ok &= check("a 15 MB run is reported against ITS budget: '**live/walk15**: "
+                "proxy traffic 8.7 MB of 15 MB'",
+                results["walk15"][0] == 0
+                and "**live/walk15**: proxy traffic 8.7 MB of 15 MB" in written)
+    ok &= check("over a 15 MB budget: '::error::stopped: proxy budget 15 MB "
+                "exceeded' and the step fails",
+                results["over15"][0] == 1 and "::error::stopped: proxy budget "
+                "15 MB exceeded" in results["over15"][1])
+    ok &= check("a null proxy_budget_bytes reads as no cap",
+                results["nocap"][0] == 0
+                and "**live/nocap**: proxy traffic 1.0 MB of no budget" in written)
     ok &= check("no proxy fields / no sidecar: reported, not a crash",
                 results["plain"][0] == 0 and results["missing"][0] == 0
                 and "not metered" in written and "unknown" in written)
+    return ok
+
+
+class _TurnSite:
+    """A results grid whose next-press turns over only on chosen presses.
+
+    `turn_on` holds the press numbers (1-based) whose /graphql answer
+    arrives; every other press is the measured throttle: the press goes
+    through and the first card never changes. `on_press` runs on each press
+    (a test uses it to spend the proxy budget)."""
+
+    def __init__(self, turn_on=(), button=True, late=False, on_press=None):
+        self.turn_on, self.button, self.late = set(turn_on), button, late
+        self.on_press = on_press
+        self.presses, self.sku, self.sleeps = 0, 1, []
+
+    def press(self, *a):
+        if self.presses and not self.button:
+            return False
+        self.presses += 1
+        if self.on_press:
+            self.on_press()
+        if self.presses in self.turn_on:
+            self.sku = 100 + self.presses
+        return True
+
+    def href(self, *a):
+        return f"/pdp/lo/{self.sku}?pwa_ts=1"
+
+    def count(self, *a):
+        return 50
+
+    def sleep(self, ms):
+        self.sleeps.append(ms)
+        # The grid that answers late: it arrives during the paced pause.
+        if self.late and ms >= 1000 * 10 and self.presses == 1:
+            self.sku = 999
+
+    @property
+    def long_waits(self):
+        return [ms for ms in self.sleeps if ms > page_flow.NEXT_PAGE_POLL_MS]
+
+
+def _turn(site, wait=45.0, before_retry=lambda: None, throttled=lambda: 1):
+    return page_flow.advance_with_throttle_retry(
+        site.press, site.href, site.count, site.sleep, wait, before_retry,
+        throttled=throttled, timeout_ms=5_000)
+
+
+class _RecordingPool(_FakePool):
+    def __init__(self):
+        self.advances = 0
+
+    def advance(self, reason=""):
+        self.advances += 1
+
+
+def _run_fake_turn(engine_mod, site, wait=45.0, meter=None, tmp="."):
+    """Turn to page 3 through the engine's real `_fetch_one_page` (url=None),
+    with the press, the first card, the count and every sleep stubbed."""
+    import types
+    import proxy_meter
+    row = rows_of("LISTING_US")[0]
+    patches = {
+        "_press_next": site.press,
+        "_first_card_href": site.href,
+        "_count": site.count,
+        "_sleep": site.sleep,
+        "_graphql_throttled": lambda *a: 0,
+        "_content": lambda *a, **k: "<html></html>",
+        "_content_when_settled": lambda *a, **k: "<html></html>",
+        "_current_url": lambda *a, **k: _SAVERS_URL,
+        "_scroll_the_grid": lambda *a, **k: {},
+        "_parse_for_mode": lambda *a, **k: [row],
+        "detect_recaptcha_v3": lambda *a, **k: None,
+        "detect_recaptcha_in_page": lambda *a, **k: None,
+        "reconcile_detections": lambda *a, **k: None,
+        "time": types.SimpleNamespace(sleep=lambda s: site.sleeps.append(
+            int(s * 1000))),
+    }
+    saved = {k: getattr(engine_mod, k) for k in patches if hasattr(engine_mod, k)}
+    saved_classify = page_flow.classify
+    for k, v in patches.items():
+        if k in saved:
+            setattr(engine_mod, k, v)
+    page_flow.classify = lambda *a, **k: "content"
+    args = types.SimpleNamespace(
+        pages=3, retries=1, retry_delay=0, block_retry_delay=None,
+        proxy_block_retries=2, mode="listing", out=os.path.join(tmp, "turn"),
+        dump_html=None, solve_captcha="when-blocked",
+        twocaptcha_key=None, captcha_api="v2", min_score=0.7,
+        headless=False, delay=0, chromium_path="/stub", cdp_endpoint=None,
+        throttle_wait_seconds=wait)
+    if meter is not None:
+        setattr(args, proxy_meter._ARGS_ATTR, meter)
+    session, pool = _FakeSession(200), _RecordingPool()
+    session.page.wait_for_timeout = site.sleep
+    try:
+        outcome = engine_mod._fetch_one_page(session, args, pool, 3, None)
+        err = None
+    except BaseException as e:  # noqa: BLE001 — the budget stop is one
+        outcome, err = None, e
+    finally:
+        for k, v in saved.items():
+            setattr(engine_mod, k, v)
+        page_flow.classify = saved_classify
+    return outcome, err, session.relaunches + pool.advances
+
+
+def _scrape_with_page3(engine_mod, tmp, page3):
+    """`scrape()` over 3 pages with the page fetch faked: pages 1-2 serve
+    rows, page 3 is whatever `page3(PageOutcome)` makes of it."""
+    import contextlib as _ctx
+    from unittest import mock
+    rows = _meter_rows()
+    name = engine_mod.__name__
+    if "playwright" in name:
+        sessions = ["sync_playwright", "_BrowserSession"]
+    elif "puppeteer" in name:
+        sessions = ["_AsyncBridge", "_Session"]
+    else:
+        sessions = ["_Session"]
+
+    def fake_fetch(session, a, pool, page_num, url):
+        page_rows = [replace(r, sku=f"{page_num}{i}")
+                     for i, r in enumerate(rows)]
+        oc = engine_mod.PageOutcome(page_num=page_num, url=url or _SAVERS_URL,
+                                    final_url=_SAVERS_URL, products=page_rows,
+                                    state="content")
+        return page3(oc) if page_num == 3 else oc
+
+    args = _engine_args(engine_mod, tmp, None, "--pages", "3", "--delay", "0",
+                        "--format", "json")
+    with _ctx.ExitStack() as stack:
+        for attr in sessions:
+            stack.enter_context(mock.patch.object(engine_mod, attr))
+        stack.enter_context(mock.patch.object(engine_mod, "_fetch_one_page",
+                                              side_effect=fake_fetch))
+        stack.enter_context(mock.patch.object(engine_mod.time, "sleep"))
+        stack.enter_context(_captured_output())
+        try:
+            rc = engine_mod.scrape(args)
+        except BaseException as e:  # noqa: BLE001 — fail BY NAME
+            rc = f"raised {type(e).__name__}"
+    out = os.path.join(tmp, "out")
+    meta = (json.load(open(out + ".meta.json"))
+            if os.path.exists(out + ".meta.json") else {})
+    return rc, meta
+
+
+def test_throttle_retry():
+    group("A throttled page turn gets ONE paced retry in the same session")
+    import proxy_meter
+    ok = True
+
+    site = _TurnSite(turn_on={1})
+    ok &= check("a turn that comes back is not retried or paused",
+                _turn(site) == (page_flow.ADVANCED, 0) and site.presses == 1
+                and not site.long_waits)
+    site, calls = _TurnSite(turn_on={2}), []
+    got = _turn(site, before_retry=lambda: calls.append(1))
+    ok &= check(f"429 then success: the second press turns the page "
+                f"({got}, presses {site.presses})",
+                got == (page_flow.ADVANCED, 1) and site.presses == 2)
+    ok &= check(f"...after ONE pause of 30-60 s at the default 45 "
+                f"({site.long_waits} ms)",
+                len(site.long_waits) == 1
+                and 30_000 <= site.long_waits[0] <= 60_000)
+    ok &= check("...and the proxy budget is checked before the pause and "
+                "before the second press", len(calls) == 2)
+    site = _TurnSite()
+    got = _turn(site)
+    ok &= check(f"429 twice: the turn stays failed after exactly two presses "
+                f"({got}, presses {site.presses})",
+                got == (page_flow.NO_TURNOVER, 1) and site.presses == 2
+                and len(site.long_waits) == 1)
+    site = _TurnSite()
+
+    def spent():
+        raise proxy_meter.ProxyBudgetExceeded("proxy budget 0.0 MB exceeded")
+    err = _base_exception(lambda: _turn(site, before_retry=spent))
+    ok &= check(f"budget spent: no pause and no second press, the budget "
+                f"stop propagates ({type(err).__name__})",
+                isinstance(err, proxy_meter.ProxyBudgetExceeded)
+                and site.presses == 1 and not site.long_waits)
+    site = _TurnSite()
+    ok &= check("--throttle-wait-seconds 0: no retry",
+                _turn(site, wait=0) == (page_flow.NO_TURNOVER, 0)
+                and site.presses == 1 and not site.long_waits)
+    site = _TurnSite(late=True)
+    ok &= check("a grid that arrives DURING the pause is a turn, and is not "
+                "pressed again (a second press would skip a page)",
+                _turn(site) == (page_flow.ADVANCED, 1) and site.presses == 1)
+    site = _TurnSite(button=False)
+    ok &= check("a next button gone after the failed turn is still a failed "
+                "turn, never the end of the listing",
+                _turn(site) == (page_flow.NO_TURNOVER, 1))
+    site = _TurnSite(button=False)
+    site.presses = 0
+    site.button = True
+    site.press = lambda *a: False
+    ok &= check("no next button on the first press is still NO_BUTTON",
+                _turn(site) == (page_flow.NO_BUTTON, 0))
+    pauses = [page_flow.throttle_pause_s(45.0) for _ in range(300)]
+    ok &= check(f"the pause is random within 30-60 s at 45 "
+                f"({min(pauses):.1f}-{max(pauses):.1f})",
+                all(30.0 <= p <= 60.0 for p in pauses)
+                and len({round(p, 3) for p in pauses}) > 1
+                and page_flow.throttle_pause_s(45.0, lambda a, b: a) == 30.0
+                and page_flow.throttle_pause_s(45.0, lambda a, b: b) == 60.0)
+    ok &= check("the default is 45 s and one retry per turn",
+                page_flow.THROTTLE_WAIT_DEFAULT_S == 45.0
+                and page_flow.THROTTLE_RETRIES_PER_TURN == 1)
+
+    group("...through each engine's real page fetch")
+    with tempfile.TemporaryDirectory() as tmp:
+        for engine in ENGINES:
+            mod = _load_engine_copy(engine)
+            short = engine.split("_")[0]
+            site = _TurnSite(turn_on={2})
+            oc, err, moved = _run_fake_turn(mod, site, tmp=tmp)
+            ok &= check(f"{short}: 429 then success → page 3 read in the same "
+                        f"session (presses {site.presses}, "
+                        f"retries {getattr(oc, 'throttle_retries', None)}, "
+                        f"{err!r})",
+                        err is None and oc.ok and len(oc.products) == 1
+                        and oc.throttle_retries == 1 and site.presses == 2
+                        and moved == 0)
+            ok &= check(f"{short}: ...after one 30-60 s pause "
+                        f"({site.long_waits})",
+                        len([w for w in site.long_waits if w >= 30_000]) == 1
+                        and all(w <= 60_000 for w in site.long_waits))
+            site = _TurnSite()
+            oc, err, moved = _run_fake_turn(mod, site, tmp=tmp)
+            ok &= check(f"{short}: 429 twice → no_turnover after two presses, "
+                        f"throttle_retries 1, no relaunch or new exit",
+                        err is None and oc.state == "no_turnover"
+                        and oc.load_failed and oc.throttle_retries == 1
+                        and site.presses == 2 and moved == 0)
+            meter = proxy_meter.ProxyMeter(0.001)
+            site = _TurnSite(on_press=lambda: meter.add(5_000))
+            oc, err, moved = _run_fake_turn(mod, site, meter=meter, tmp=tmp)
+            ok &= check(f"{short}: budget spent by the failed turn → no retry "
+                        f"({type(err).__name__}, presses {site.presses})",
+                        isinstance(err, proxy_meter.ProxyBudgetExceeded)
+                        and site.presses == 1
+                        and not [w for w in site.long_waits if w >= 30_000])
+            site = _TurnSite(turn_on={2})
+            oc, err, moved = _run_fake_turn(mod, site, wait=3.0, tmp=tmp)
+            ok &= check(f"{short}: --throttle-wait-seconds reaches the turn "
+                        f"(3 → {site.long_waits})",
+                        oc is not None and oc.ok
+                        and [w for w in site.long_waits if w >= 2_000] != []
+                        and all(w <= 4_000 for w in site.long_waits))
+            site = _TurnSite(turn_on={2})
+            oc, err, moved = _run_fake_turn(mod, site, wait=0, tmp=tmp)
+            ok &= check(f"{short}: --throttle-wait-seconds 0 → no retry",
+                        oc is not None and oc.state == "no_turnover"
+                        and oc.throttle_retries == 0 and site.presses == 1)
+            args = _engine_args(mod, tmp, None)
+            ok &= check(f"{short}: --throttle-wait-seconds defaults to 45",
+                        args.throttle_wait_seconds == 45.0)
+
+            group(f"{short}: the run's exit and sidecar")
+
+            def retried_ok(oc):
+                oc.throttle_retries = 1
+                return oc
+
+            def retried_failed(oc):
+                oc.throttle_retries, oc.products = 1, []
+                oc.state, oc.load_failed = "no_turnover", True
+                return oc
+            rc, meta = _scrape_with_page3(mod, tmp, retried_ok)
+            ok &= check(f"{short}: a turn that succeeded on its retry → exit 0, "
+                        f"3 pages, throttle_retries 1 (rc={rc})",
+                        rc == 0 and meta.get("pages_completed") == 3
+                        and meta.get("throttle_retries") == 1
+                        and meta.get("status") == "complete")
+            rc, meta = _scrape_with_page3(mod, tmp, retried_failed)
+            ok &= check(f"{short}: throttled twice → exit 6 next_page_throttled, "
+                        f"throttle_retries 1 (rc={rc}, "
+                        f"{meta.get('stop_reason')})",
+                        rc == 6 and meta.get("stop_reason") == "next_page_throttled"
+                        and meta.get("throttle_retries") == 1
+                        and meta.get("pages_completed") == 2)
+            rc, meta = _scrape_with_page3(mod, tmp, lambda oc: oc)
+            ok &= check(f"{short}: no throttle → throttle_retries 0 in the "
+                        f"sidecar", rc == 0 and meta.get("throttle_retries") == 0)
     return ok
 
 
@@ -3732,6 +4061,7 @@ def main() -> int:
     ok &= test_scroll_loop()
     ok &= test_grid_lazy_tail()
     ok &= test_throttle_is_not_completion()
+    ok &= test_throttle_retry()
     ok &= test_output_contract()
     ok &= test_writers_and_finish_run()
     ok &= test_diff()

@@ -53,7 +53,8 @@ the shape of it is unusual enough to be worth stating twice:
 from __future__ import annotations
 
 import logging
-from typing import Callable, Dict, List, Optional
+import random
+from typing import Callable, Dict, List, Optional, Tuple
 
 from product_parser import (SELECTORS, NEXT_PAGE_SELECTOR, PAGE_CAP,
                             challenge_vendor, detect_block_marker,
@@ -635,23 +636,120 @@ def advance_to_next_page(press_next: Callable[[], bool],
     way, and on this site the reason is almost always that the `/graphql`
     POST behind the turn was answered 429.
     """
-    before = first_card_href()
-    before_sku = sku_from_url(strip_tracking(before or "")) if before else None
+    before_sku = _first_sku(first_card_href)
     if not press_next():
         return NO_BUTTON
+    return _await_turnover(first_card_href, count, sleep, before_sku,
+                           timeout_ms)
+
+
+def _first_sku(first_card_href: Callable[[], Optional[str]]) -> Optional[str]:
+    href = first_card_href()
+    return sku_from_url(strip_tracking(href or "")) if href else None
+
+
+def _turned_over(first_card_href, count, before_sku) -> bool:
+    if count(READY_SELECTOR_LISTING) <= 0:
+        return False
+    now_sku = _first_sku(first_card_href)
+    return bool(now_sku and now_sku != before_sku)
+
+
+def _await_turnover(first_card_href, count, sleep, before_sku,
+                    timeout_ms: int) -> str:
     waited = 0
     while waited < timeout_ms:
         sleep(NEXT_PAGE_POLL_MS)
         waited += NEXT_PAGE_POLL_MS
-        if count(READY_SELECTOR_LISTING) <= 0:
-            continue
-        now = first_card_href()
-        now_sku = sku_from_url(strip_tracking(now or "")) if now else None
-        if now_sku and now_sku != before_sku:
+        if _turned_over(first_card_href, count, before_sku):
             logger.info("next page arrived after %dms", waited)
             return ADVANCED
     logger.info("next page never turned over within %dms", timeout_ms)
     return NO_TURNOVER
+
+
+# One bounded retry of a page turn that never came back.
+#
+# Measured on the 2026-10-22 canary walk through a sticky residential
+# session: pages 1 and 2 turned over in 2 s, then the press for page 3 got
+# one `/graphql` HTTP 429 ("Provisioned request rate has been exceeded",
+# no Retry-After header) and the grid stayed empty for the whole 60 s. The
+# answer carries no wait to honour, so the wait is ours: a random pause
+# between 2/3 and 4/3 of `--throttle-wait-seconds` (30-60 s at the default
+# 45), in the SAME browser, session and exit — the next page exists only
+# inside this session, so a relaunch or a new exit would restart the listing
+# at page 1. Then the turn is tried ONCE more. A second failure ends the run
+# as before (partial, next_page_throttled); there is no third press.
+#
+# The retry keys on the no-turnover STATE rather than on a counted 429: the
+# Playwright engine can count the /graphql 429s, Selenium has no response
+# listener and cannot. All three engines therefore retry the same state and
+# report the count only where it is known.
+THROTTLE_WAIT_DEFAULT_S = 45.0
+THROTTLE_RETRIES_PER_TURN = 1
+
+
+def throttle_pause_s(wait_seconds: float,
+                     uniform: Callable[[float, float], float] = random.uniform
+                     ) -> float:
+    """The randomised pause before retrying a throttled turn, in seconds."""
+    return uniform(wait_seconds * 2.0 / 3.0, wait_seconds * 4.0 / 3.0)
+
+
+def advance_with_throttle_retry(press_next: Callable[[], bool],
+                                first_card_href: Callable[[], Optional[str]],
+                                count: Callable[[str], int],
+                                sleep: Callable[[int], None],
+                                wait_seconds: float,
+                                before_retry: Callable[[], None],
+                                throttled: Callable[[], int] = lambda: 0,
+                                uniform: Callable[[float, float], float]
+                                = random.uniform,
+                                timeout_ms: int = NEXT_PAGE_TIMEOUT_MS
+                                ) -> Tuple[str, int]:
+    """`advance_to_next_page`, with one paced retry of a turn that failed.
+
+    Returns (outcome, retries made). `wait_seconds` 0 disables the retry.
+    `before_retry` is called before the pause and again before the second
+    press; the engines pass the proxy-budget check, which raises once the
+    run's budget is spent, so a spent budget never buys a retry.
+
+    The second attempt compares against the card that was first BEFORE the
+    original press: a grid that arrived late, during the pause, is a turn
+    and is not pressed again (a second press would skip a page). A next
+    button that is gone after the failed turn is NOT the end of the
+    listing here — it reads as another failed turn, never as NO_BUTTON.
+    """
+    before_sku = _first_sku(first_card_href)
+    if not press_next():
+        return NO_BUTTON, 0
+    turn = _await_turnover(first_card_href, count, sleep, before_sku,
+                           timeout_ms)
+    if turn == ADVANCED or not wait_seconds or wait_seconds <= 0:
+        return turn, 0
+    before_retry()
+    pause = throttle_pause_s(wait_seconds, uniform)
+    seen = throttled()
+    logger.warning(
+        "The page turn did not come back within %.0fs%s. Waiting %.0fs in "
+        "the same browser session and exit, then pressing next once more "
+        "(--throttle-wait-seconds %g; 0 disables this retry).",
+        timeout_ms / 1000,
+        f" ({seen} /graphql response(s) were HTTP 429)" if seen else "",
+        pause, wait_seconds)
+    sleep(int(pause * 1000))
+    before_retry()
+    if _turned_over(first_card_href, count, before_sku):
+        logger.info("The next page arrived during the pause; not pressing "
+                    "again.")
+        return ADVANCED, THROTTLE_RETRIES_PER_TURN
+    if not press_next():
+        logger.info("The next button is not on the page after the failed "
+                    "turn; the turn stays failed.")
+        return NO_TURNOVER, THROTTLE_RETRIES_PER_TURN
+    turn = _await_turnover(first_card_href, count, sleep, before_sku,
+                           timeout_ms)
+    return turn, THROTTLE_RETRIES_PER_TURN
 
 
 def page_cap_reached(page_num: int) -> bool:

@@ -5,12 +5,16 @@
 Reads `<out>.latest_attempt.meta.json` (written on every metered run, rows
 or not), else `<out>.meta.json`, and appends
 
-    **<label>**: proxy traffic X.X MB of 10 MB
+    **<label>**: proxy traffic X.X MB of N MB
 
-to $GITHUB_STEP_SUMMARY. A missing or unreadable sidecar, or a run that did
-not go through a local proxy, is reported as such and is not a failure here
-(the exit-code steps judge the run itself). A run that went over its proxy
-budget prints `::error::stopped: proxy budget 10 MB exceeded` and exits 1.
+to $GITHUB_STEP_SUMMARY. N is the run's OWN budget, read from the sidecar's
+`proxy_budget_bytes` (written by the scraper from --proxy-budget-mb; `null`
+or absent reads as "no budget"), so a canary step that raises its budget is
+reported against that budget rather than a fixed figure. A missing or
+unreadable sidecar, or a run that did not go through a local proxy, is
+reported as such and is not a failure here (the exit-code steps judge the
+run itself). A run that went over its proxy budget prints
+`::error::stopped: proxy budget N MB exceeded` and exits 1.
 """
 
 import json

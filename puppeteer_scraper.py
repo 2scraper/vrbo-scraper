@@ -199,6 +199,8 @@ class PageOutcome:
     scroll: Optional[dict] = None
     # Served but not obtained; see playwright_scraper.PageOutcome.
     unobtained: Optional[str] = None
+    # Paced retries of a page turn that never came back (0 or 1).
+    throttle_retries: int = 0
 
     @property
     def ok(self) -> bool:
@@ -582,11 +584,15 @@ def _fetch_one_page(session, args, pool, page_num: int,
                         "next button (this listing has no page-%d address).",
                         page_num, args.pages, page_num)
             proxy_meter.check(args)
-            turn = page_flow.advance_to_next_page(
+            # One paced retry of a turn that never came back, in this same
+            # browser session (see page_flow.advance_with_throttle_retry).
+            turn, outcome.throttle_retries = page_flow.advance_with_throttle_retry(
                 lambda: _press_next(session),
                 lambda: _first_card_href(session),
                 lambda sel: _count(session, sel),
-                _sleep)
+                lambda ms: _sleep(ms),
+                args.throttle_wait_seconds,
+                lambda: proxy_meter.check(args))
             if turn == page_flow.NO_BUTTON:
                 outcome.state = "exhausted"
                 outcome.final_url = _current_url(session)
@@ -601,12 +607,14 @@ def _fetch_one_page(session, args, pool, page_num: int,
                 outcome.final_url = _current_url(session)
                 logger.error(
                     "Pressed next for page %d and the grid never came back "
-                    "within %.0fs. This is NOT the end of the listing — the "
+                    "within %.0fs%s. This is NOT the end of the listing — the "
                     "run is reported as PARTIAL (exit 6). The data behind a "
                     "page turn is fetched over POST /graphql, which is rate "
                     "limited SEPARATELY from the HTML. Raise --delay (it is "
                     "%.1fs now), or spread the load with --proxy-file.",
-                    page_num, page_flow.NEXT_PAGE_TIMEOUT_MS / 1000, args.delay)
+                    page_num, page_flow.NEXT_PAGE_TIMEOUT_MS / 1000,
+                    " on both attempts" if outcome.throttle_retries else "",
+                    args.delay)
                 return outcome
 
         if load_failed:
@@ -802,6 +810,7 @@ def _fetch_one_page(session, args, pool, page_num: int,
 def scrape(args) -> int:
     outcomes: List[PageOutcome] = []
     seen_keys = set()
+    throttle_retries = 0
     blocked = False
     stop_reason = "single_page_mode" if args.mode == "property" else "completed"
 
@@ -851,6 +860,7 @@ def scrape(args) -> int:
                         "session.", page_num)
                 time.sleep(args.delay)
                 outcome = _fetch_one_page(session, args, pool, page_num, None)
+                throttle_retries += outcome.throttle_retries
                 outcomes.append(outcome)
 
                 if outcome.state == "exhausted":
@@ -946,7 +956,8 @@ def scrape(args) -> int:
                  "cards_missing": cards_missing,
                  "results_total": total_available,
                  "results_total_is_floor": total_is_floor,
-                 "pages_still_growing": unsettled}
+                 "pages_still_growing": unsettled,
+                 "throttle_retries": throttle_retries}
 
     extra = session_fields(pool, extra)
     extra = proxy_meter.finish(args, extra)
@@ -996,6 +1007,16 @@ def parse_args():
                         "measured clearing minutes later, so a longer wait "
                         "is the lever that fits it. The number of retries "
                         "stays the built-in budget (2 without a proxy pool).")
+    p.add_argument("--throttle-wait-seconds", type=page_flow.at_least(0, float),
+                   default=page_flow.THROTTLE_WAIT_DEFAULT_S, metavar="SECONDS",
+                   help="When the press for the next page gets no new grid "
+                        "(the site's /graphql answered HTTP 429, with no "
+                        "Retry-After), wait a random 2/3 to 4/3 of this "
+                        "(30-60 s at the default 45) in the same browser "
+                        "session and exit, and press once more. One retry "
+                        "per turn; a second failure ends the run as partial "
+                        "(exit 6). The proxy budget is checked before the "
+                        "retry. 0 = no retry.")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="vrbo_products", help="Output file prefix")
     p.add_argument("--chromium-path", default=None, metavar="PATH",

@@ -127,10 +127,17 @@ while every `/graphql` POST behind a press came back **HTTP 429**
 (`{"error":"Too Many Requests","message":"Provisioned request rate has been
 exceeded"}`) and the site's own client gave up.
 
-When that happens the run reports **`partial`, exit 6** — never "the listing
-ended" — and says how many 429s it counted. `--delay` (default **5.0s**,
-higher than the family default) is the cheap lever; `--proxy-file` is the one
-that scales.
+The 429 carries no `Retry-After` header. So when a press gets no grid back,
+the run waits a random **30-60 s** (`--throttle-wait-seconds`, default **45**,
+`0` = off) in the same browser session and exit and presses next **once**
+more. The next page exists only inside that session, so it is never retried
+from a new browser or a new exit. The proxy budget is checked before the
+retry. The sidecar records `throttle_retries`.
+
+If the retry gets no grid either, the run reports **`partial`, exit 6** —
+never "the listing ended" — and says how many 429s it counted (Playwright
+only). `--delay` (default **5.0s**, higher than the family default) is the
+cheap lever; `--proxy-file` is the one that scales.
 
 ### 4. The results list is an inner scroller, and the page body never scrolls
 
@@ -260,6 +267,10 @@ expedia_property_id, price_note, sku, url, source. The only differences were
 Engine flag differences are asserted in both directions by the test suite, so
 closing one needs a README edit rather than a quiet patch:
 
+* `--throttle-wait-seconds SECONDS` — all three engines, but not part of the
+  family flag contract. The pause before the one retry of a page turn that
+  got no grid back: a random 2/3 to 4/3 of it (30-60 s at the default 45).
+  `0` turns the retry off.
 * `--block-retry-delay SECONDS` — all three engines, but not part of the
   family flag contract. Wait before re-fetching a page that came back
   refused, doubling per retry (30 waits 30 s, then 60 s). Unset keeps the
@@ -315,7 +326,10 @@ A proxy is billed by traffic. With `--proxy` / `--proxy-file` / `VRBO_PROXY`:
   Media is loaded by default here, and images are most of a search page's
   bytes, so a long walk through a proxy reaches 10 MB sooner than on a site
   that blocks them. Raise the budget, or pass `--block-media` if `image_url`
-  is not needed. The sidecars record `proxy_bytes`, `proxy_budget_bytes`
+  is not needed. Measured on the canary's walk through a residential exit
+  (2026-10-22, run 39858684619): with `--block-media`, pages 1 and 2 at 50 of
+  50 cards each used **8.7 MB**, so that walk runs at `--proxy-budget-mb 15`
+  to leave room for its third page and a paced retry. The sidecars record `proxy_bytes`, `proxy_budget_bytes`
   (`null` with no cap) and `proxy_budget_exceeded`: in `<out>.meta.json`,
   and in `<out>.latest_attempt.meta.json`, which every metered run writes.
   The log ends with `Proxy traffic: X.X MB of Y MB budget`.

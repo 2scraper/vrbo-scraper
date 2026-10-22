@@ -163,20 +163,28 @@ jobs:
         # 2026-10-21 walk used 9.6 MB of the 10 MB cap with two of its three
         # pages only 19 cards deep, so three full pages with images would
         # not fit. image_url is not one of the columns this job checks.
+        # --proxy-budget-mb 15, not the scraper's default 10: with
+        # --block-media the 2026-10-22 walk (run 39858684619) used 8.7 MB
+        # for pages 1 and 2 at 50 of 50 cards each, so a full third page and
+        # one paced retry of a throttled turn would not fit under 10.
+        # A turn that gets no grid back (a /graphql 429) is retried ONCE
+        # after a 30-60 s pause (--throttle-wait-seconds, default 45);
+        # throttle_retries in the sidecar says whether that happened.
         run: |
           set +e
           start=$(date -u -d '+45 days' +%F)
           end=$(date -u -d '+47 days' +%F)
           url="https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=${start}&endDate=${end}&adults=2"
           xvfb-run -a python3 playwright_scraper.py --url "$url" \
-            --pages 3 --delay 15 --retries 4 --proxy-budget-mb 10 --block-media \
+            --pages 3 --delay 15 --retries 4 --proxy-budget-mb 15 --block-media \
             --out canary_walk --dump-html canary_walk.html
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
       - name: Proxy traffic of the walk
         # The walk goes through VRBO_PROXY, which meters what it sends and
-        # stops at --proxy-budget-mb 10. This puts the figure in the step
-        # summary and fails the job when the cap was hit.
+        # stops at --proxy-budget-mb 15. This puts the figure in the step
+        # summary, with the budget read from the run's own sidecar, and fails
+        # the job when the cap was hit.
         if: ${{ !cancelled() && steps.run.outcome != 'skipped' }}
         run: python3 .github/proxy_traffic.py "pagination" canary_walk
 
