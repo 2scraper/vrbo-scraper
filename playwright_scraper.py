@@ -251,6 +251,31 @@ def _results_height(page) -> Optional[int]:
         return None
 
 
+def _results_geometry(page) -> Optional[tuple]:
+    """(scrollTop, scrollHeight, clientHeight) of the results container."""
+    try:
+        g = page.evaluate(
+            """(selector) => {
+                const el = document.querySelector(selector);
+                return el ? [el.scrollTop, el.scrollHeight, el.clientHeight] : null;
+            }""", SELECTORS["scroll_container"])
+        return tuple(g) if g else None
+    except (PWError, PWTimeout):
+        return None
+
+
+def _set_results_top(page, top: int) -> None:
+    """Set the results container's scrollTop."""
+    try:
+        page.evaluate(
+            """([selector, top]) => {
+                const el = document.querySelector(selector);
+                if (el) { el.scrollTop = top; }
+            }""", [SELECTORS["scroll_container"], top])
+    except (PWError, PWTimeout):
+        pass
+
+
 # The data behind a page turn comes over POST /graphql, and that endpoint is
 # rate limited SEPARATELY from the HTML: measured on this site, the search
 # page kept answering HTTP 200 while every /graphql POST behind a next-press
@@ -673,25 +698,33 @@ def _scroll_the_grid(session, args, html: str, page_num: int) -> dict:
     """
     target = page_flow.expected_cards(html)
     before = _count(session.page, page_flow.READY_SELECTOR_LISTING)
+    trace: dict = {}
     reached = page_flow.scroll_until_settled(
         lambda sel: _count(session.page, sel),
         lambda: _scroll_results(session.page),
         lambda: _results_height(session.page),
         session.page.wait_for_timeout,
         selector=page_flow.READY_SELECTOR_LISTING,
-        target=target)
+        target=target,
+        nudge=lambda: page_flow.nudge_grid(
+            lambda: _results_geometry(session.page),
+            lambda top: _set_results_top(session.page, top),
+            session.page.wait_for_timeout),
+        trace=trace)
     settled = target is None or reached >= target
     logger.info("Scrolled page %d: %d card(s) at first paint, %d after "
-                "scrolling%s.", page_num, before, reached,
-                f" (the page says it holds {target})" if target else "")
+                "scrolling%s%s.", page_num, before, reached,
+                f" (the page says it holds {target})" if target else "",
+                f", {trace['nudges']} nudge(s)" if trace.get("nudges") else "")
     if not settled:
         logger.warning(
             "Page %d settled at %d card(s) but its own counter says it holds "
-            "%d. Those %d are missing from this run — the grid was still "
-            "filling when the scroll budget ran out, or the site served a "
-            "short page.", page_num, reached, target, target - reached)
+            "%d. Those %d are missing from this run — %s.",
+            page_num, reached, target, target - reached,
+            page_flow.unsettled_reason(trace))
     return {"first_paint": before, "reached": reached, "target": target,
-            "settled": settled}
+            "settled": settled, "nudges": trace.get("nudges", 0),
+            "placeholders_left": trace.get("placeholders_left")}
 
 
 def _fetch_one_page(session, args, pool, page_num: int, url: Optional[str]) -> PageOutcome:

@@ -277,6 +277,12 @@ SELECTORS: Dict[str, str] = {
     # nothing here — measured, 12 window scrolls, 18 cards before and 18
     # after. Scrolling THIS element reached 50 of 50 in two rounds.
     "scroll_container": ".scrollable-result-section",
+    # The grid's own "more cards are coming" placeholder at the lazy tail.
+    # Present on every capture that stopped short of its counter (canary
+    # 2026-10-20/21: 6 of them under 13 or 19 cards), absent on every full
+    # page. It is filled only when it comes INTO view: the scroll-to-bottom
+    # loop leaves it in view the whole time, so the grid waits forever.
+    "grid_placeholder": '[data-stid="search-listing-placeholder"]',
     # Two spellings of one element, and both are real (see the module
     # docstring). Kept as one comma selector so every read gets both.
     "card_price": '[data-stid="product-price-summary"], [data-test-id="price-summary"]',
