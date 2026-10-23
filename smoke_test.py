@@ -4126,7 +4126,10 @@ class _FakeDataDomePage:
 
     def __init__(self, after_reload="content", widget=True,
                  captcha_url=_DD_CAPTCHA_URL, page_cookie=None,
-                 validate_answer=(200, {"success": True})):
+                 validate_answer=(200, {"success": True}), widget_pass=None):
+        # widget_pass: None (the engine cannot post from the frame),
+        # "clears" (the page validates and leaves) or "nothing".
+        self.widget_pass, self.frame_posts = widget_pass, []
         self.challenge_html = FIXTURES["BLOCK_429"]
         self.html_now = self.challenge_html
         self.widget = widget
@@ -4170,12 +4173,20 @@ class _FakeDataDomePage:
                 self.html_now = self.challenge_html
             return 200
 
+        def frame_post(message):
+            self.frame_posts.append(message)
+            if self.widget_pass == "clears":
+                self.html_now = FIXTURES["LISTING_US"]
+            return True
+
         return cs.DataDomeOps(
             html=lambda: self.html_now, count=count, frame_src=frame_src,
             user_agent=lambda: _DD_UA,
             page_url=lambda: URLS["BLOCK_429"], get_cookie=get_cookie,
             set_cookie=set_cookie, post_json=post_json, navigate=navigate,
-            sleep=lambda ms: None)
+            sleep=lambda ms: None,
+            frame_post=frame_post if self.widget_pass else None,
+            watch=(lambda path: (lambda: [200])) if self.widget_pass else None)
 
 
 def _dd_run(page, *, api_key=_DD_KEY, proxy=_DD_PROXY, budget=None,
@@ -4194,7 +4205,8 @@ def _dd_run(page, *, api_key=_DD_KEY, proxy=_DD_PROXY, budget=None,
     budget = budget or page_flow.SolveBudget()
     got = cs.datadome_fallback(page.ops(), api_key=api_key, proxy_url=proxy,
                                budget=budget, nav_url=nav_url, stats=stats,
-                               page_num=1, solve=solve, settle_ms=0, poll_ms=1)
+                               page_num=1, solve=solve, settle_ms=0, poll_ms=1,
+                               widget_wait_ms=0)
     return got, len(calls), stats, calls
 
 
@@ -4360,6 +4372,32 @@ def test_datadome_fallback():
                 and stats.sidecar()["captcha_solves"] == 1
                 and stats.sidecar()["captcha_kind"] == "datadome")
 
+    page = _FakeDataDomePage(after_reload="challenge", page_cookie=own,
+                             widget_pass="clears")
+    got, bought, stats, _ = _dd_run(page)
+    stats.settle("content")
+    rec = stats.attempts[-1]
+    msg = json.loads(page.frame_posts[0]) if page.frame_posts else {}
+    ok &= check("widget: the answer is reported from the slider's frame as "
+                "the slider does on a pass (eventType passed, the solver's "
+                "cookie string), and nothing of ours follows when it clears",
+                got and bought == 1 and msg == {
+                    "eventType": "passed", "responseType": "captcha",
+                    "cookie": _DD_SOLVED_COOKIE}
+                and page.set == [] and page.navigations == []
+                and page.posts == [] and rec["after_widget"] == "cleared"
+                and rec["widget_validate_statuses"] == [200]
+                and rec["accepted"] is True)
+    page = _FakeDataDomePage(after_reload="content", page_cookie=own,
+                             widget_pass="nothing")
+    got, bought, stats, _ = _dd_run(page)
+    rec = stats.attempts[-1]
+    ok &= check("widget did nothing: the cookie + re-load path runs next, "
+                "still one purchase",
+                got and bought == 1 and len(page.frame_posts) == 1
+                and rec["after_widget"] == "still" and len(page.set) == 1
+                and len(page.navigations) == 1)
+
     page = _FakeDataDomePage(after_reload="challenge", page_cookie=own)
     got, bought, stats, _ = _dd_run(page)
     rec = stats.attempts[-1]
@@ -4495,7 +4533,8 @@ def _run_datadome_page(engine_mod, states, *, pool=None, remote=False,
         "_parse_for_mode": lambda *a, **k: [],
         "_datadome_ops": lambda *a, **k: page.ops(),
         "datadome_fallback": functools.partial(
-            cs.datadome_fallback, solve=solve, settle_ms=0, poll_ms=1),
+            cs.datadome_fallback, solve=solve, settle_ms=0, poll_ms=1,
+            widget_wait_ms=0),
         "solve_recaptcha": lambda *a, **k: calls.append("recaptcha") or "t",
         "time": types.SimpleNamespace(sleep=lambda s: None),
     }
@@ -4573,24 +4612,85 @@ def test_datadome_in_the_fetch_loop():
     return ok
 
 
+# The handler page's answer to a slider pass, reduced to what the site's tag
+# and challenge bundle do with it: a TRUSTED message from a captcha-delivery
+# origin, `eventType: "passed"`, sets the cookie, then the page POSTs its
+# validate step and, on success, re-loads its destination.
+_STUB_TAG = """<script>
+window.addEventListener('message', function (e) {
+  if (!e.isTrusted || !/captcha-delivery\\.com/.test(e.origin)) return;
+  var n; try { n = JSON.parse(e.data); } catch (x) { return; }
+  if (n.eventType !== 'passed' || !n.cookie) return;
+  document.cookie = n.cookie;
+  fetch('/botOrNot/validate', {method: 'POST', headers: {
+      'Content-Type': 'application/json', 'X-Exchange-Handshake': 'REDACTED'},
+    body: JSON.stringify({'datadome-response': {ddChallengeType: n.responseType},
+                          destination: 'stub', exchangeHandshake: 'REDACTED'})})
+    .then(function (r) { return r.json(); })
+    .then(function (j) { if (j.success) location.replace(location.href); });
+});
+</script>"""
+
+
+class _StubSliderFrame:
+    """geo.captcha-delivery.com's slider document, over HTTPS on 127.0.0.1
+    (a throwaway self-signed certificate; the browser maps the host here)."""
+
+    def __init__(self, tmp):
+        import http.server
+        import ssl
+        import subprocess
+        import threading
+        cert, key = os.path.join(tmp, "c.pem"), os.path.join(tmp, "k.pem")
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048",
+                        "-nodes", "-keyout", key, "-out", cert, "-days", "1",
+                        "-subj", "/CN=geo.captcha-delivery.com"],
+                       check=True, capture_output=True)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = b"<html><body>slider</body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.port = self.server.server_address[1]
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
 class _StubDataDomeSite:
     """vrbo.com's challenge and its pass, on 127.0.0.1.
 
     /search answers 429 with the real handler fixture (a slider iframe
-    mounted) and sets the page's own `datadome` cookie, until a request
-    carries the cookie value the stub solver hands out — then it serves the
-    real listing fixture. `accept=False` never serves it, so the handler's
-    validate step is exercised; POST /botOrNot/validate is recorded."""
+    mounted, and _STUB_TAG) and sets the page's own `datadome` cookie, until
+    a request carries the cookie value the stub solver hands out — then it
+    serves the real listing fixture. `accept=False` never serves it and
+    answers every validate with `success: false`."""
 
-    def __init__(self, accept=True):
+    def __init__(self, accept=True, frame_port=None):
         import http.server
         import threading
         site = self
         self.accept, self.hits, self.validates = accept, [], []
+        src = (_DD_CAPTCHA_URL if frame_port is None else _DD_CAPTCHA_URL.replace(
+            "geo.captcha-delivery.com/", "geo.captcha-delivery.com:%d/" % frame_port))
         challenge = FIXTURES["BLOCK_429"].replace(
             '<div id="DATADOME-CHALLENGE"></div>',
-            '<div id="DATADOME-CHALLENGE"><iframe src="' + _DD_CAPTCHA_URL
-            + '"></iframe></div>')
+            '<div id="DATADOME-CHALLENGE"><iframe src="' + src
+            + '"></iframe></div>' + _STUB_TAG)
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def _send(self, status, body, ctype="text/html", cookie=None):
@@ -4620,16 +4720,17 @@ class _StubDataDomeSite:
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                cookies = self.headers.get("Cookie") or ""
                 site.validates.append((self.path, dict(self.headers.items()),
-                                       json.loads(body or b"{}"),
-                                       self.headers.get("Cookie") or ""))
-                self._send(200, json.dumps({"success": False}),
+                                       json.loads(body or b"{}"), cookies))
+                ok = site.accept and "datadome=SOLVED-value" in cookies
+                self._send(200, json.dumps({"success": ok}),
                            ctype="application/json")
 
             def log_message(self, *a):
                 pass
 
-        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = ("http://127.0.0.1:%d/search?destination=Orlando"
                     % self.server.server_address[1])
@@ -4641,9 +4742,11 @@ class _StubDataDomeSite:
 
 def test_datadome_in_a_real_browser(skips):
     """Opt-in (DATADOME_BROWSER=1): each installed driver meets the stub
-    challenge, and the engine's own DataDomeOps — cookie read/write, the
-    in-page validate fetch, the iframe read, the UA — run against a real
-    Chromium. The solver is the 127.0.0.1 stub API. Not run in CI."""
+    challenge, and the engine's own DataDomeOps — the iframe read, the UA,
+    the pass reported from inside the slider's frame, cookie read/write and
+    the in-page validate fetch — run against a real Chromium. The solver is
+    the 127.0.0.1 stub API, the slider frame a local HTTPS stub. Not run in
+    CI."""
     group("DataDome in a real browser (opt-in)")
     if os.environ.get("DATADOME_BROWSER") != "1":
         print("  not run — set DATADOME_BROWSER=1 with a Chromium installed")
@@ -4653,9 +4756,12 @@ def test_datadome_in_a_real_browser(skips):
     import captcha_solver as cs
     ok = True
     chromium = os.environ.get("PROXY_METER_CHROMIUM", "/usr/bin/chromium")
-    # The slider iframe's host resolves to a closed local port: nothing
-    # leaves this machine.
-    no_egress = "--host-resolver-rules=MAP *.captcha-delivery.com 127.0.0.1:1"
+    tmp = tempfile.mkdtemp()
+    frame = _StubSliderFrame(tmp)
+    # The slider's host resolves to the local HTTPS stub: nothing leaves
+    # this machine.
+    flags = ["--host-resolver-rules=MAP geo.captcha-delivery.com 127.0.0.1",
+             "--ignore-certificate-errors"]
     for driver in ("playwright", "pyppeteer", "selenium"):
         try:
             __import__(driver)
@@ -4665,20 +4771,26 @@ def test_datadome_in_a_real_browser(skips):
                   "pyppeteer": "puppeteer_scraper",
                   "selenium": "selenium_scraper"}[driver]
         mod = _load_engine_copy(engine)
-        for accept in (True, False):
-            site, api = _StubDataDomeSite(accept=accept), _StubSolverAPI()
+        # (accept, use the widget): accepted through the widget; refused
+        # everywhere (widget, then cookie + re-load, then validate); and the
+        # cookie + re-load path on its own.
+        for accept, widget in ((True, True), (False, True), (True, False)):
+            site = _StubDataDomeSite(accept=accept, frame_port=frame.port)
+            api = _StubSolverAPI()
             args = types.SimpleNamespace(out="dd")
             stats = cs.CaptchaStats()
             solve = functools.partial(cs.solve_datadome, api_base=api.base,
                                       poll_interval=0.05)
             sess = types.SimpleNamespace(remote=False, pool=None)
             closer = None
+            label = "%s, %s%s" % (driver, "accepting" if accept else "refusing",
+                                  "" if widget else ", no widget path")
             try:
                 if driver == "playwright":
                     from playwright.sync_api import sync_playwright
                     pw = sync_playwright().start()
-                    b = pw.chromium.launch(headless=True, args=[no_egress])
-                    sess.context = b.new_context()
+                    b = pw.chromium.launch(headless=True, args=flags)
+                    sess.context = b.new_context(ignore_https_errors=True)
                     sess.page = sess.context.new_page()
                     sess.page.goto(site.url)
 
@@ -4690,8 +4802,9 @@ def test_datadome_in_a_real_browser(skips):
                     sess.bridge = mod._AsyncBridge()
                     b = sess.bridge.run(launch(
                         headless=True, executablePath=chromium,
-                        args=["--no-sandbox", no_egress], handleSIGINT=False,
-                        handleSIGTERM=False, handleSIGHUP=False))
+                        args=["--no-sandbox"] + flags, ignoreHTTPSErrors=True,
+                        handleSIGINT=False, handleSIGTERM=False,
+                        handleSIGHUP=False))
                     sess.page = sess.bridge.run(b.newPage())
                     sess.bridge.run(sess.page.goto(site.url))
 
@@ -4704,7 +4817,8 @@ def test_datadome_in_a_real_browser(skips):
                     o = Options()
                     o.add_argument("--headless=new")
                     o.add_argument("--no-sandbox")
-                    o.add_argument(no_egress)
+                    for flag in flags:
+                        o.add_argument(flag)
                     o.binary_location = chromium
                     sess.driver = webdriver.Chrome(options=o, service=Service(
                         os.environ.get("PROXY_METER_CHROMEDRIVER",
@@ -4713,12 +4827,14 @@ def test_datadome_in_a_real_browser(skips):
                     sess.driver.get(site.url)
                     closer = sess.driver.quit
                 ops = mod._datadome_ops(sess, args)
+                if not widget:
+                    ops.frame_post = None
                 html = ops.html() or ""
                 got = cs.datadome_fallback(
                     ops, api_key=_DD_KEY, proxy_url=_DD_PROXY,
                     budget=page_flow.SolveBudget(), nav_url=site.url,
-                    stats=stats, page_num=1, solve=solve, settle_ms=2000,
-                    poll_ms=200)
+                    stats=stats, page_num=1, solve=solve, settle_ms=3000,
+                    poll_ms=200, widget_wait_ms=4000)
                 after = ops.html() or ""
                 stats.settle(detect_page_state(after, None, site.url))
                 rec = stats.attempts[-1] if stats.attempts else {}
@@ -4727,7 +4843,7 @@ def test_datadome_in_a_real_browser(skips):
                 site_ua = site.hits[0][2] if site.hits else None
                 cookie = ops.get_cookie("datadome", site.url) or {}
             except Exception as e:  # noqa: BLE001
-                ok &= check(f"{driver}: ran without error ({type(e).__name__}: "
+                ok &= check(f"{label}: ran without error ({type(e).__name__}: "
                             f"{str(e)[:160]})", False)
                 continue
             finally:
@@ -4738,39 +4854,64 @@ def test_datadome_in_a_real_browser(skips):
                         pass
                 site.close()
                 api.close()
-            ok &= check(f"{driver}: the real fixture is detected ({len(html)} bytes)",
+            ok &= check(f"{label}: the real fixture is detected",
                         cs.is_datadome_challenge(html))
-            ok &= check(f"{driver}: the slider URL is read off the live iframe",
-                        task.get("captchaUrl") == _DD_CAPTCHA_URL)
-            ok &= check(f"{driver}: the solver gets the UA the site saw",
+            ok &= check(f"{label}: the slider URL is read off the live iframe",
+                        "captcha-delivery.com" in (task.get("captchaUrl") or ""))
+            ok &= check(f"{label}: the solver gets the UA the site saw",
                         bool(site_ua) and task.get("userAgent") == site_ua)
-            ok &= check(f"{driver}: the cookie is set, read back, and keeps the "
-                        f"page's own SameSite/path ({cookie.get('sameSite')}, "
-                        f"{cookie.get('path')})",
-                        rec.get("cookie_applied") is True
-                        and cookie.get("value") == "SOLVED-value"
-                        and cookie.get("sameSite") == "Lax"
-                        and cookie.get("path") == "/")
-            if accept:
-                ok &= check(f"{driver}: the re-load carries the cookie and is "
-                            f"served, recorded as accepted",
-                            got and rec.get("accepted") is True
-                            and "datadome=SOLVED-value" in site.hits[-1][1]
-                            and site.validates == [])
+            ok &= check(f"{label}: one createTask", len(
+                [1 for p, _ in api.bodies if p == "/createTask"]) == 1)
+            # pyppeteer has no out-of-process iframe support, so it cannot
+            # reach the slider's cross-origin frame and goes straight to the
+            # cookie + re-load path. The other two drivers can.
+            reach = widget and driver != "pyppeteer"
+            if widget and not reach:
+                ok &= check(f"{label}: cannot post from the frame, says so, "
+                            f"and falls through to the cookie + re-load",
+                            rec.get("widget_posted") is False
+                            and rec.get("cookie_applied") is True)
+            if reach:
+                ok &= check(f"{label}: the pass is reported from inside the "
+                            f"slider's frame and the page's own handler "
+                            f"validates with the solved cookie "
+                            f"({rec.get('widget_posted')}, {len(site.validates)})",
+                            rec.get("widget_posted") is True and site.validates
+                            and "datadome=SOLVED-value" in site.validates[0][3]
+                            and site.validates[0][2].get("datadome-response")
+                            == {"ddChallengeType": "captcha"})
+            if accept and reach:
+                ok &= check(f"{label}: the page left the challenge by itself, "
+                            f"no re-load of ours, accepted",
+                            got and rec.get("after_widget") == "cleared"
+                            and "reload_status" not in rec
+                            and rec.get("accepted") is True)
+            elif accept:
+                ok &= check(f"{label}: cookie set with the page's own "
+                            f"SameSite/path ({cookie.get('sameSite')}, "
+                            f"{cookie.get('path')}), the re-load carries it "
+                            f"and is served, accepted",
+                            got and rec.get("cookie_applied") is True
+                            and cookie.get("sameSite") == "Lax"
+                            and cookie.get("path") == "/"
+                            and rec.get("accepted") is True
+                            and "datadome=SOLVED-value" in site.hits[-1][1])
             else:
-                v = site.validates[0] if site.validates else ("", {}, {}, "")
-                hdrs = {k.lower(): val for k, val in v[1].items()}
-                ok &= check(f"{driver}: still refused: the handler's validate "
-                            f"step is POSTed in-page with its handshake and "
-                            f"the cookie",
-                            v[0] == "/botOrNot/validate"
-                            and hdrs.get("x-exchange-handshake") == "REDACTED"
-                            and v[2].get("datadome-response") == {"ddChallengeType": "captcha"}
-                            and "datadome=SOLVED-value" in v[3])
-                ok &= check(f"{driver}: ...and recorded as solved but refused",
-                            rec.get("returned") is True
-                            and rec.get("accepted") is False
-                            and rec.get("validate_success") is False)
+                ours = [v for v in site.validates if "x-exchange-handshake"
+                        in {k.lower() for k in v[1]}]
+                ok &= check(f"{label}: after the widget, the cookie + re-load "
+                            f"and our own validate POST (handshake header, "
+                            f"solved cookie) all ran, recorded solved but "
+                            f"refused ({ {k: rec.get(k) for k in ('after_widget', 'cookie_applied', 'validate_success', 'accepted')} }, "
+                            f"{len(ours)} validate(s))",
+                            rec.get("after_widget") == ("still" if reach else None)
+                            and rec.get("cookie_applied") is True
+                            and len(ours) >= (2 if reach else 1)
+                            and "datadome=SOLVED-value" in ours[-1][3]
+                            and rec.get("validate_success") is False
+                            and rec.get("returned") is True
+                            and rec.get("accepted") is False)
+    frame.close()
     return ok
 
 

@@ -65,13 +65,20 @@ that is a fix, and the release notes lead with it.
     `DataDomeSliderTask`. That exit includes the sticky `-session-` login.
     The task is polled for up to 180 s, and only after the page's one-solve
     allowance has been claimed.
-  - **Apply.** The returned `datadome` cookie is installed with the
-    challenge page's own cookie domain, path, `Secure` and `SameSite`, read
-    back, and the page is re-loaded.
+  - **Through the widget.** The answer is reported the way the slider does
+    on a pass: a message posted from inside the slider's iframe. The site's
+    own tag then installs the cookie and session, and its handler page
+    validates and leaves. The engine gives this 20 s. Playwright and
+    Selenium can post from the iframe; pyppeteer cannot reach a
+    cross-origin iframe and skips this step.
+  - **Apply.** If the page is still the challenge, the returned `datadome`
+    cookie is installed with the challenge page's own cookie domain, path,
+    `Secure` and `SameSite`, read back, and the page is re-loaded.
   - **Validate.** If the handler page comes back, the engine waits for it
     to clear again. It then makes the handler's own validate call
-    (`POST /botOrNot/validate` with the page's `exchangeHandshake`), as the
-    site's challenge bundle makes it. That call has not been observed on
+    (`POST /botOrNot/validate` with the page's `exchangeHandshake`).
+  - The widget message and the validate call are reproduced from the
+    site's served tag and challenge bundle. Neither has been observed on
     the wire.
   - **Selenium** can do this only through a proxy without a login.
   - **Sidecar.** It gains `captcha_kind`, `captcha_solves` (tasks created),

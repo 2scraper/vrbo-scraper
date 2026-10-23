@@ -523,21 +523,39 @@ Then the engine runs these steps:
    iframe, userAgent, proxyType/Address/Port/Login/Password, per
    [2Captcha's current docs](https://2captcha.com/api-docs/datadome-slider-captcha)),
    polled for up to 180 s.
-2. It installs the returned `datadome` cookie. The domain, path, `Secure`
-   and `SameSite` come from the challenge page's own cookie, so the answer
-   replaces it rather than landing beside it. The cookie is then read back
-   to confirm it landed.
-3. It re-loads page 1. A handler page that comes back gets the same settle,
-   because with an accepted cookie its own tag is not refused.
-4. If the handler page is still there, the engine makes the handler's own
-   validate call, in the page: `POST /botOrNot/validate` with the
-   `X-Exchange-Handshake` header and the `destination` / `exchangeHandshake`
-   from the page's config. On `{"success": true}` it re-loads once more.
+2. **Through the widget.** It reports the answer the way the slider itself
+   does on a pass: a message posted from inside the slider's iframe,
+   `{"eventType": "passed", "responseType": "captcha", "cookie": <answer>}`.
+   This is what the site's own page then does with it:
+   - The site's DataDome tag (`/dd/tags.js`) accepts only a trusted message
+     from a captcha-delivery origin, which is why the message is posted from
+     the iframe and not dispatched by the page's script.
+   - The tag installs the cookie, and the session it sends as
+     `x-datadome-clientid` (the page runs it with `sessionByHeader`).
+   - The tag fires `dd_response_passed`. On that event the handler page
+     makes its own validate call (`POST /botOrNot/validate` with its
+     handshake) and leaves for the search.
 
-   This step is reproduced from the site's own challenge bundle
-   (`captcha-pwa` `root-challenge.*.js`, read 2026-10-23). It has not been
-   observed on the wire. The `ddChallengeType` it sends, `captcha`, is the
-   slider's type, and that value is an inference.
+   The engine gives this 20 s. Playwright and Selenium can post from the
+   iframe. pyppeteer cannot reach a cross-origin iframe, so it skips this
+   step.
+3. **Cookie and re-load.** If the page is still the challenge, the engine
+   installs the `datadome` cookie itself. The domain, path, `Secure` and
+   `SameSite` come from the challenge page's own cookie, so the answer
+   replaces it rather than landing beside it. The cookie is read back, and
+   page 1 is re-loaded. A handler page that comes back gets the same settle,
+   because with an accepted cookie its own tag is not refused.
+4. **Validate again.** If the handler page is still there, the engine makes
+   the handler's validate call itself, in the page: `POST
+   /botOrNot/validate` with the `X-Exchange-Handshake` header and the
+   `destination` / `exchangeHandshake` from the page's config. On
+   `{"success": true}` it re-loads once more.
+
+Steps 2 and 4 are reproduced from the site's own served code: the tag
+(`tags.js` 5.11.1) and the challenge bundle (`captcha-pwa`
+`root-challenge.*.js`), both read 2026-10-23. They are not taken from a
+captured exchange. The `responseType` / `ddChallengeType` value `captcha` is
+the slider's type, and that value is an inference.
 
 The sidecar says what happened, in `<out>.meta.json` and in
 `<out>.latest_attempt.meta.json`, which is written whenever a captcha was
@@ -548,9 +566,10 @@ met:
 - `captcha_accepted`: answers after which the page classified as served.
 - `captcha_attempts`: one record per decision. It holds the outcome
   (`self_cleared`, `no_widget`, `exit_banned`, `no_key`, `no_proxy`,
-  `no_address`, `budget_spent`, `unsolvable`, `solve_failed`, `solved`),
-  whether the cookie was applied and kept, the re-load and validate
-  statuses, and `accepted`.
+  `no_address`, `budget_spent`, `unsolvable`, `solve_failed`, `solved`).
+  It also holds whether the widget step ran and cleared the page (with the
+  statuses of the page's own validate calls), whether the cookie was applied
+  and kept, the re-load and validate statuses, and `accepted`.
 
 **An accepted solve is not by itself proof that the solve did it.** In the
 2026-09-14 measurements, the same exit was served without any solve about
@@ -587,9 +606,10 @@ NOTHING AT ALL, same exit, minutes
 That last line is why the first 200 proves nothing: the same exit was served
 with no solve and no cookie in play. In that script, the solver's cookie
 string carried only `expires` and `domain`, while the page's own cookie was
-`Secure; SameSite=Lax`. Those runs also never made the handler's own
-validate call. Mirroring the page's attributes and making that call are the
-two differences in the path above.
+`Secure; SameSite=Lax`. Those runs also never went through the widget or the
+handler's validate call. The path above differs in three ways: it reports
+the answer through the widget, mirrors the page's cookie attributes, and
+makes the validate call.
 
 The recommended path still does not need any of this. A real local Chrome
 on a residential exit returned 50/50 cards with no challenge at all

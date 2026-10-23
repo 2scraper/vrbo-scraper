@@ -48,6 +48,7 @@ No other solving provider is integrated: 2Captcha only.
 from __future__ import annotations
 
 import base64
+import json
 import re
 import time
 import logging
@@ -725,9 +726,16 @@ solve_recaptcha_v3 = solve_recaptcha
 #   "destination": <destination>, "exchangeHandshake": <exchangeHandshake>}`,
 # and on `{"success": true}` replaces the location with the destination. The
 # tag runs with `disableAutoRefreshOnCaptchaPassed`, so the cookie alone is
-# not what the page waits for. That is read from the served code, not from a
-# captured exchange: `ddChallengeType` here is "captcha", the slider's type,
-# and has not been seen on the wire.
+# not what the page waits for. What fires that event is the tag's own
+# message handler (tags.js 5.11.1): a trusted message from the slider's
+# captcha-delivery frame, `{"eventType": "passed", "responseType": ...,
+# "cookie": ...}`, on which the tag sets the cookie and, with
+# `sessionByHeader`, the session it sends as `x-datadome-clientid`. So the
+# answer is first reported THROUGH THE WIDGET (posted from inside that
+# frame), then pasted as a cookie with a re-load, then the validate call is
+# made directly. All of it is read from the served code, not from a captured
+# exchange: the response type "captcha" is the slider's type and has not
+# been seen on the wire.
 #
 # The 2Captcha side, per https://2captcha.com/api-docs/datadome-slider-captcha
 # (checked 2026-10-23): task type `DataDomeSliderTask`, required fields
@@ -752,6 +760,9 @@ DATADOME_FRAME_SELECTOR = 'iframe[src*="captcha-delivery.com"]'
 DATADOME_COOKIE = "datadome"
 # The slider's response type, for the site's own validate step.
 DATADOME_RESPONSE_TYPE = "captcha"
+# How long the page gets to validate and leave after the answer is reported
+# through the widget.
+DATADOME_WIDGET_PASS_MS = 20000
 
 _CAPTCHA_DELIVERY_HOST_RE = re.compile(r"(^|\.)captcha-delivery\.com$", re.I)
 
@@ -1081,6 +1092,13 @@ class DataDomeOps:
                                          an in-page fetch, same origin
       navigate(url) -> Optional[int]     load url; the HTTP status if known
       sleep(ms) -> None
+      frame_post(message) -> bool        OPTIONAL: post `message` to the
+                                         page from INSIDE the slider's
+                                         iframe, as the slider does on a pass
+      watch(path) -> callable            OPTIONAL: start recording the HTTP
+                                         statuses of responses whose URL
+                                         contains `path`; the callable
+                                         returns them so far
     """
     html: object
     count: object
@@ -1092,6 +1110,37 @@ class DataDomeOps:
     post_json: object
     navigate: object
     sleep: object
+    frame_post: object = None
+    watch: object = None
+
+
+def widget_pass_message(solution_cookie: str) -> str:
+    """What DataDome's slider iframe posts to the page on a pass.
+
+    Read from the site's own tag (tags.js 5.11.1, 2026-10-23): its message
+    handler takes a TRUSTED message from a captcha-delivery origin,
+    JSON.parse(data), and on `eventType: "passed"` with a `cookie` it sets
+    that cookie (and, with sessionByHeader, the session it sends as
+    x-datadome-clientid), then fires `dd_response_passed`, on which the
+    handler page makes its own validate call. A message dispatched by the
+    page's own script is not trusted, which is why it is posted from the
+    iframe."""
+    return json.dumps({"eventType": "passed",
+                       "responseType": DATADOME_RESPONSE_TYPE,
+                       "cookie": solution_cookie})
+
+
+def _wait_for_clear(ops: DataDomeOps, wait_ms: int, poll_ms: int) -> bool:
+    waited = 0
+    while True:
+        html = ops.html()
+        if html is not None and not is_datadome_challenge(html) \
+                and not ops.count(DATADOME_CONTAINER_SELECTOR):
+            return True
+        if waited >= wait_ms:
+            return False
+        ops.sleep(poll_ms)
+        waited += poll_ms
 
 
 def _wait_for_widget(ops: DataDomeOps, settle_ms: int, poll_ms: int):
@@ -1116,7 +1165,8 @@ def datadome_fallback(ops: DataDomeOps, *, api_key: Optional[str],
                       proxy_url: Optional[str], budget, nav_url: Optional[str],
                       stats: CaptchaStats, page_num: Optional[int] = None,
                       solve=solve_datadome, settle_ms: int = DATADOME_SETTLE_MS,
-                      poll_ms: int = 500) -> bool:
+                      poll_ms: int = 500,
+                      widget_wait_ms: int = DATADOME_WIDGET_PASS_MS) -> bool:
     """Clear a DataDome pick on this page if it can be done honestly.
 
     True when the page changed (cleared by itself, or a solve was applied
@@ -1207,6 +1257,32 @@ def datadome_fallback(ops: DataDomeOps, *, api_key: Optional[str],
 
     html_before = ops.html() or ""
     own = ops.get_cookie(DATADOME_COOKIE, page_url)
+
+    # 1. Through the widget, the way the slider reports its own pass: the
+    #    site's tag installs the cookie and session, and the handler page
+    #    validates and leaves for the search by itself.
+    if ops.frame_post is not None:
+        seen = ops.watch("/botOrNot/validate") if ops.watch else None
+        try:
+            posted = bool(ops.frame_post(widget_pass_message(answer["cookie"])))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not report the answer through the slider's "
+                           "frame: %s", _redact(exc))
+            posted = False
+        record["widget_posted"] = posted
+        if posted:
+            cleared = _wait_for_clear(ops, widget_wait_ms, poll_ms)
+            record["after_widget"] = "cleared" if cleared else "still"
+            if seen is not None:
+                record["widget_validate_statuses"] = list(seen())[:5]
+            logger.info("Answer reported through the slider's frame: the page "
+                        "%s.", "left the challenge" if cleared
+                        else "is still the challenge")
+            if cleared:
+                record["outcome"] = "solved"
+                stats.note(record)
+                return True
+
     cookie = cookie_to_install(answer["cookie"], own, page_url)
     record["cookie_attrs_from"] = cookie.pop("attrs_from")
     try:
@@ -1217,7 +1293,7 @@ def datadome_fallback(ops: DataDomeOps, *, api_key: Optional[str],
         logger.error("Could not set the DataDome cookie: %s", _redact(exc))
         record["cookie_applied"] = False
 
-    # 1. The cookie, then the page again.
+    # 2. The cookie, then the page again.
     #    A handler page that comes back is given the same settle as the
     #    first: with an accepted cookie its own tag is not refused, and the
     #    page validates and leaves by itself. A slider mounting again means
@@ -1234,7 +1310,7 @@ def datadome_fallback(ops: DataDomeOps, *, api_key: Optional[str],
     record["cookie_kept_after_reload"] = after.get("value") == cookie["value"]
     record["still_challenged_after_reload"] = still
 
-    # 2. Still the handler: its own validate step, as its bundle makes it,
+    # 3. Still the handler: its own validate step, as its bundle makes it,
     #    on the handshake of the page now in front of us.
     if still:
         if not record["cookie_kept_after_reload"]:

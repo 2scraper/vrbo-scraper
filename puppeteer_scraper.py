@@ -529,12 +529,31 @@ def _datadome_ops(session, args) -> DataDomeOps:
                            _mask_credentials(str(e))[:200])
             return None
 
+    def frame_post(message):
+        for frame in page().frames:
+            if "captcha-delivery.com" in (frame.url or ""):
+                run(frame.evaluate(
+                    "(m) => { window.parent.postMessage(m, '*'); return true; }",
+                    message))
+                return True
+        return False
+
+    def watch(path):
+        seen = []
+
+        def on_response(response):
+            if path in (response.url or ""):
+                seen.append(response.status)
+        page().on("response", on_response)
+        return lambda: seen
+
     return DataDomeOps(html=lambda: _content(session),
                        count=lambda sel: _count(session, sel),
                        frame_src=frame_src, user_agent=user_agent,
                        page_url=lambda: _current_url(session),
                        get_cookie=get_cookie, set_cookie=set_cookie,
-                       post_json=post_json, navigate=navigate, sleep=_sleep)
+                       post_json=post_json, navigate=navigate, sleep=_sleep,
+                       frame_post=frame_post, watch=watch)
 
 
 def handle_captcha_if_present(session, args, *, budget,

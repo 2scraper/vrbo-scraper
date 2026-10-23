@@ -523,12 +523,28 @@ def _datadome_ops(session, args) -> DataDomeOps:
         proxy_meter.drain_selenium(driver())
         return None  # WebDriver has no response status
 
+    def frame_post(message):
+        found = driver().find_elements(By.CSS_SELECTOR, DATADOME_FRAME_SELECTOR)
+        if not found:
+            return False
+        try:
+            driver().switch_to.frame(found[0])
+            driver().execute_script(
+                "window.parent.postMessage(arguments[0], '*'); return true;",
+                message)
+            return True
+        finally:
+            driver().switch_to.default_content()
+
+    # No `watch`: WebDriver has no response events (the performance log is
+    # the proxy meter's).
     return DataDomeOps(html=lambda: _content(session),
                        count=lambda sel: _count(session, sel),
                        frame_src=frame_src, user_agent=user_agent,
                        page_url=lambda: _current_url(session),
                        get_cookie=get_cookie, set_cookie=set_cookie,
-                       post_json=post_json, navigate=navigate, sleep=_sleep)
+                       post_json=post_json, navigate=navigate, sleep=_sleep,
+                       frame_post=frame_post)
 
 
 def handle_captcha_if_present(session, args, *, budget,
