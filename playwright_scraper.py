@@ -83,7 +83,10 @@ from playwright.sync_api import (sync_playwright, Error as PWError,
 
 from captcha_solver import (detect_recaptcha_v3, detect_recaptcha_in_page,
                             reconcile_detections, solve_recaptcha,
-                            INJECT_TOKEN_JS)
+                            INJECT_TOKEN_JS, DataDomeOps,
+                            DATADOME_FRAME_SELECTOR, captcha_fields,
+                            datadome_fallback, is_datadome_challenge,
+                            stats_of as captcha_stats)
 from product_parser import (parse_products, parse_property_page, SELECTORS,
                             NEXT_PAGE_SELECTOR, PAGE_CAP,
                             detect_bot_challenge, listing_kind, page_currency,
@@ -603,7 +606,106 @@ def _content_when_settled(page, attempts: int = 4, pause_ms: int = 700):
     return None
 
 
-def handle_captcha_if_present(page, args, *, budget) -> bool:
+def _solver_proxy(session) -> Optional[str]:
+    """The proxy this browser exits through, for a solver that must use it.
+
+    None over --cdp-endpoint (the remote browser's exit is not ours to hand
+    on) and without a proxy. With a pool it is the CURRENT entry, sticky
+    session and all, which is the one the browser was launched on.
+    """
+    if session.remote or not session.pool:
+        return None
+    return session.pool.current
+
+
+def _datadome_ops(session, args) -> DataDomeOps:
+    """captcha_solver.DataDomeOps bound to this Playwright session."""
+    def page():
+        return session.page
+
+    def html():
+        try:
+            return page().content()
+        except (PWError, PWTimeout):
+            return None
+
+    def count(selector):
+        try:
+            return _count(page(), selector)
+        except (PWError, PWTimeout):
+            return 0
+
+    def frame_src():
+        try:
+            el = page().query_selector(DATADOME_FRAME_SELECTOR)
+            src = el.get_attribute("src") if el else None
+            if src:
+                return src
+            for frame in page().frames:
+                if "captcha-delivery.com" in (frame.url or ""):
+                    return frame.url
+        except (PWError, PWTimeout):
+            pass
+        return None
+
+    def user_agent():
+        try:
+            return page().evaluate("() => navigator.userAgent")
+        except (PWError, PWTimeout):
+            return ""
+
+    def get_cookie(name, url):
+        try:
+            for c in session.context.cookies(url):
+                if c.get("name") == name:
+                    return dict(c)
+        except (PWError, PWTimeout):
+            pass
+        return None
+
+    def set_cookie(cookie):
+        session.context.add_cookies([{
+            "name": cookie["name"], "value": cookie["value"],
+            "domain": cookie["domain"], "path": cookie["path"],
+            "expires": cookie["expires"], "httpOnly": cookie["httpOnly"],
+            "secure": cookie["secure"], "sameSite": cookie["sameSite"]}])
+
+    def post_json(path, headers, body):
+        result = page().evaluate(
+            """async ([path, headers, body]) => {
+                const r = await fetch(path, {method: 'POST', headers,
+                    body: JSON.stringify(body), credentials: 'same-origin'});
+                let j = null;
+                try {
+                  if ((r.headers.get('content-type') || '').includes('json'))
+                    j = await r.json();
+                } catch (e) {}
+                return [r.status, j];
+            }""", [path, headers, body])
+        return (result[0], result[1]) if result else (None, None)
+
+    def navigate(url):
+        proxy_meter.check(args)
+        try:
+            response = page().goto(url, wait_until="domcontentloaded",
+                                   timeout=60000)
+            return response.status if response is not None else None
+        except (PWError, PWTimeout) as e:
+            logger.warning("Re-loading after the solve failed: %s",
+                           _mask_credentials(str(e))[:200])
+            return None
+
+    return DataDomeOps(html=html, count=count, frame_src=frame_src,
+                       user_agent=user_agent, page_url=lambda: page().url,
+                       get_cookie=get_cookie, set_cookie=set_cookie,
+                       post_json=post_json, navigate=navigate,
+                       sleep=lambda ms: page().wait_for_timeout(ms))
+
+
+def handle_captcha_if_present(page, args, *, budget, session=None,
+                              nav_url: Optional[str] = None,
+                              page_num: Optional[int] = None,
+                              allow_datadome: bool = True) -> bool:
     """Detect and solve a challenge. True if something was solved.
 
     Runs after EVERY navigation, for ANY page. The static-HTML and runtime
@@ -611,14 +713,13 @@ def handle_captcha_if_present(page, args, *, budget) -> bool:
     short-circuited, because they can disagree about the variant and the
     parameters for one are rejected for the other.
 
-    NOTE what this cannot help with, because on this site it is the normal
-    case. Expedia's Bot-or-Not handler is a multiplexer: its own page config
-    names which vendor it picked — `whichChallenge` was `datadome-challenge`
-    on the measured refusal, and the same handler can serve reCAPTCHA,
-    Turnstile, Arkose or a proof-of-work instead. This repo solves reCAPTCHA
-    and nothing else, so `detect_page_state` reports the other picks as
-    "blocked" rather than "challenge" precisely so no solve is attempted and
-    nothing is charged.
+    Expedia's Bot-or-Not handler is a multiplexer: its own page config names
+    which vendor it picked — `whichChallenge` was `datadome-challenge` on
+    every measured refusal, and the same handler can serve reCAPTCHA,
+    Turnstile, Arkose or a proof-of-work instead. A DataDome pick goes to
+    captcha_solver.datadome_fallback (needs `session` for the context and
+    the proxy, and `nav_url` to re-load); a reCAPTCHA one to the solver
+    below; anything else is "blocked" and buys nothing.
 
     `budget` is the page's page_flow.SolveBudget, shared by every call site
     for this page and asked immediately before the purchase.
@@ -626,6 +727,14 @@ def handle_captcha_if_present(page, args, *, budget) -> bool:
     html = _content_when_settled(page)
     if html is None:
         return False
+
+    if is_datadome_challenge(html):
+        if session is None or not allow_datadome:
+            return False
+        return datadome_fallback(
+            _datadome_ops(session, args), api_key=args.twocaptcha_key,
+            proxy_url=_solver_proxy(session), budget=budget, nav_url=nav_url,
+            stats=captcha_stats(args), page_num=page_num)
 
     # Detected is not the same as blocking. A challenge on a page whose cards
     # are already rendered guards nothing, and counting the anchors is
@@ -661,6 +770,8 @@ def handle_captcha_if_present(page, args, *, budget) -> bool:
         logger.warning("This page's solve allowance (%d) is used up — not "
                        "buying another.", budget.limit)
         return False
+    record = {"page": page_num, "kind": challenge.kind, "created": True,
+              "returned": False, "accepted": None}
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
                                 api_version=args.captcha_api,
@@ -668,7 +779,11 @@ def handle_captcha_if_present(page, args, *, budget) -> bool:
     except Exception as e:  # noqa: BLE001 — a solver failure is not a crash
         logger.error("Solving the challenge failed (%s) — continuing with "
                      "whatever the page holds.", e)
+        record["outcome"] = "solve_failed"
+        captcha_stats(args).note(record)
         return False
+    record.update(returned=True, outcome="solved")
+    captcha_stats(args).note(record)
 
     page.evaluate(INJECT_TOKEN_JS, token)
     logger.info("Token injected. Reloading page to continue.")
@@ -857,12 +972,17 @@ def _fetch_one_page(session, args, pool, page_num: int, url: Optional[str]) -> P
         if load_failed:
             break
 
-        if handle_captcha_if_present(session.page, args, budget=budget):
+        solved = handle_captcha_if_present(
+            session.page, args, budget=budget, session=session, nav_url=url,
+            page_num=page_num)
+        if solved:
             session.page.wait_for_timeout(1000)
             status = None  # the reload replaced the response it described
 
         html = _content_when_settled(session.page) or ""
         state = _classify(session.page, html, status)
+        if solved:
+            captcha_stats(args).settle(state)
 
         # "Not painted yet" is not a fault, and telling it apart from one is
         # the distinction between blocked, empty and unpainted. A search page's first response is a
@@ -887,11 +1007,15 @@ def _fetch_one_page(session, args, pool, page_num: int, url: Optional[str]) -> P
             state = _classify(session.page, html, status)
 
         if page_flow.should_solve(state) and budget.remaining():
-            if handle_captcha_if_present(session.page, args, budget=budget):
+            if handle_captcha_if_present(session.page, args, budget=budget,
+                                         session=session, nav_url=url,
+                                         page_num=page_num,
+                                         allow_datadome=False):
                 session.page.wait_for_timeout(1000)
                 status = None
                 html = _content_when_settled(session.page) or html
                 state = _classify(session.page, html, status)
+                captcha_stats(args).settle(state)
                 # The VERIFIED outcome, and the only one worth reporting: a
                 # "ready" task result is not evidence the token works. This
                 # line is what says whether the money bought anything.
@@ -1319,6 +1443,7 @@ def scrape(args) -> int:
                 "out, so their row counts are floors rather than the "
                 "listing.", ", ".join(str(n) for n in unsettled))
 
+    extra = captcha_fields(args, extra)
     extra = session_fields(pool, extra)
     extra = proxy_meter.finish(args, extra)
     return finish_run(all_rows, args.out, args.format, args.allow_empty,
@@ -1484,13 +1609,14 @@ def parse_args():
     p.add_argument("--solve-captcha", choices=["when-blocked", "always"],
                    default="when-blocked",
                    help="when-blocked (default): only pay to solve a "
-                        "reCAPTCHA if the content is not already readable. "
-                        "always: solve whenever one is detected. Note what "
-                        "neither setting reaches: Expedia's challenge handler "
-                        "picks its vendor per request, and the measured pick "
-                        "on this site was DataDome, which this repo has no "
-                        "solver for. Those are reported as blocked and "
-                        "nothing is charged.")
+                        "challenge if the content is not already readable. "
+                        "always: solve a reCAPTCHA whenever one is detected. "
+                        "Expedia's challenge handler picks its vendor per "
+                        "request; the measured pick here was DataDome, which "
+                        "is solved through 2Captcha only with --proxy (the "
+                        "browser's own exit; never with --cdp-endpoint), "
+                        "at most once per page. Other picks are reported "
+                        "as blocked and nothing is charged.")
     p.add_argument("--min-score", type=float, default=0.7,
                    help="reCAPTCHA v3 minimum score to request (0.3, 0.7 or "
                         "0.9 — the API only accepts these three). Ignored for "

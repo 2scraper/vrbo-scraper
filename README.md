@@ -401,7 +401,7 @@ What the 2Captcha products buy here, behind one key
   before spending anything on it. Selenium cannot reach it at all (see
   above).
 * **Fingerprints** (`--fingerprint`) — a consistent device identity.
-* **Captcha solving** — see the honest limits below.
+* **Captcha solving** — the DataDome fallback and its limits are below.
 
 ### The Scraper API gets the top of the page, not the page
 
@@ -471,11 +471,12 @@ So **this path does not currently get you into Vrbo.** The remote browser is
 a real Chrome, which is the thing this site cares about most — but its exit
 address is refused, and the endpoint's own auto-solve did not clear it.
 
-Note what this is *not* evidence of: DataDome here is solvable in general
-(see below), and the reason a solve cannot rescue THIS path is the exit
-address rather than the challenge. A DataDome cookie is bound to the exit
-that earned it, and the Scraping Browser leaves from 2Captcha's own address
-rather than from a proxy you could pass to a solver.
+Note what this is *not* evidence of. It does not show that DataDome here
+cannot be solved (see below). A solve cannot rescue THIS path because of the
+exit address, not the challenge: a DataDome cookie is bound to the exit that
+earned it, and the Scraping Browser leaves from 2Captcha's own address
+rather than from a proxy you could pass to a solver. So the DataDome
+fallback below never buys a solve over `--cdp-endpoint`.
 
 The engine behaved correctly throughout: it named the vendor, spent nothing,
 and exited 3 rather than writing an empty file over good data.
@@ -486,21 +487,92 @@ access to this site today. **A residential `--proxy` is the paid product
 that addresses the actual constraint here** (the `/graphql` rate limit on
 page turns).
 
-### DataDome: 2Captcha solves it, and applying the solution did not work
+### DataDome: the fallback this repo now runs, and what it has to prove
 
-Worth separating those two halves, because they have different answers.
+When Expedia's handler picks DataDome, all three engines now try to clear it
+through 2Captcha before reporting the block. A purchase is made only when
+every one of these holds:
 
-**Solving succeeds.** `DataDomeSliderTask` is the right task type — the widget
-really is a slider ("Slide right to secure your access") — and across nine
-attempts on 2026-09-14 it came back solved **five times**, at **$0.00145**
-and 38-68s each. The remaining four were `ERROR_CAPTCHA_UNSOLVABLE`. The
-`captchaUrl` the task needs is readable off the live widget about 3s after it
-mounts; it is NOT in a server-side dump, where the mount point is empty.
+1. **The page did not clear by itself.** The handler page loads DataDome's
+   own tag; when the tag is not refused, the page validates and leaves for
+   the search by itself. Each challenge gets up to 15 s for that, or for the
+   slider to mount. A page that clears costs nothing.
+2. **A slider is on the page**, and its iframe address is not `t=bv`.
+   2Captcha's docs say `t=bv` means the exit itself is banned, and a solve
+   will not help from there.
+3. **`TWOCAPTCHA_KEY` is set**, and `--solve-captcha` is `when-blocked` (the
+   default) or `always`.
+4. **The browser's own proxy can be handed to the solver.** 2Captcha solves
+   DataDome through the caller's proxy, and the cookie is bound to the exit
+   that earned it. So the task gets the browser's current `--proxy` exit,
+   including the sticky `-session-` login that the gateway pinning adds, and
+   the browser's own `navigator.userAgent`. This rules out:
+   - `--cdp-endpoint`, whose exit is not ours to hand on;
+   - no proxy at all;
+   - Selenium with a proxy login, because Selenium strips the login, so
+     that proxy is not the exit the browser uses. Selenium with an
+     allow-listed proxy (no login) does qualify.
+5. **There is an address to re-load.** Page 1 has one. A page reached by
+   pressing next does not, so a challenge there is reported, not bought.
+6. **The page's solve allowance is unused.** It is one per page, shared by
+   every call site, and never reset by a retry or a rotation.
 
-**Applying the solution is a different matter, and it was not achieved here.**
-The solver returns a `datadome=` cookie. Injecting it into the browser
-context and reloading produced HTTP 200 once and HTTP 429 twice — and the
-control that matters shows why that first 200 proves nothing:
+Then the engine runs these steps:
+
+1. It sends a `DataDomeSliderTask` (websiteURL, captchaUrl read off the live
+   iframe, userAgent, proxyType/Address/Port/Login/Password, per
+   [2Captcha's current docs](https://2captcha.com/api-docs/datadome-slider-captcha)),
+   polled for up to 180 s.
+2. It installs the returned `datadome` cookie. The domain, path, `Secure`
+   and `SameSite` come from the challenge page's own cookie, so the answer
+   replaces it rather than landing beside it. The cookie is then read back
+   to confirm it landed.
+3. It re-loads page 1. A handler page that comes back gets the same settle,
+   because with an accepted cookie its own tag is not refused.
+4. If the handler page is still there, the engine makes the handler's own
+   validate call, in the page: `POST /botOrNot/validate` with the
+   `X-Exchange-Handshake` header and the `destination` / `exchangeHandshake`
+   from the page's config. On `{"success": true}` it re-loads once more.
+
+   This step is reproduced from the site's own challenge bundle
+   (`captcha-pwa` `root-challenge.*.js`, read 2026-10-23). It has not been
+   observed on the wire. The `ddChallengeType` it sends, `captcha`, is the
+   slider's type, and that value is an inference.
+
+The sidecar says what happened, in `<out>.meta.json` and in
+`<out>.latest_attempt.meta.json`, which is written whenever a captcha was
+met:
+- `captcha_kind`.
+- `captcha_solves`: tasks created.
+- `captcha_solved`: answers returned, which is what 2Captcha bills.
+- `captcha_accepted`: answers after which the page classified as served.
+- `captcha_attempts`: one record per decision. It holds the outcome
+  (`self_cleared`, `no_widget`, `exit_banned`, `no_key`, `no_proxy`,
+  `no_address`, `budget_spent`, `unsolvable`, `solve_failed`, `solved`),
+  whether the cookie was applied and kept, the re-load and validate
+  statuses, and `accepted`.
+
+**An accepted solve is not by itself proof that the solve did it.** In the
+2026-09-14 measurements, the same exit was served without any solve about
+one time in three (the control table below). A `self_cleared` record is the
+free control: it is the same page clearing with nothing bought.
+
+#### Live result
+
+Not measured yet through this repo. The canary's walk (`pagination`) is the live check.
+
+#### What was measured before this path existed (2026-09-14)
+
+Those runs used a standalone script against the 2Captcha API, not this repo.
+
+**Solving succeeded.** Across nine `DataDomeSliderTask` attempts, five came
+back solved, at **$0.00145** and 38-68 s each. The other four were
+`ERROR_CAPTCHA_UNSOLVABLE`. The `captchaUrl` is readable off the live widget
+about 3 s after it mounts. It is NOT in a server-side dump, where the mount
+point is empty.
+
+**Applying the bare cookie did not demonstrably grant access.** It got
+HTTP 200 once and 429 twice:
 
 ```
 no solve, no cookie, wait 55s          -> 429
@@ -512,38 +584,17 @@ NOTHING AT ALL, same exit, minutes
   later                                -> 200, no challenge even raised
 ```
 
-That last line is the one that settles it. The same exit served a clean 200
-with no solve and no cookie in play, so a 200 following a cookie is
-indistinguishable from the site simply not challenging that request. Access
-landed roughly one time in three **whether or not** a solution was applied.
+That last line is why the first 200 proves nothing: the same exit was served
+with no solve and no cookie in play. In that script, the solver's cookie
+string carried only `expires` and `domain`, while the page's own cookie was
+`Secure; SameSite=Lax`. Those runs also never made the handler's own
+validate call. Mirroring the page's attributes and making that call are the
+two differences in the path above.
 
-One concrete defect on our side is worth recording for anyone who tries
-again: the solver's cookie string carries only `expires` and `domain` — no
-`Secure`, no `SameSite` — while the cookie the challenge page sets itself is
-`Secure` and `SameSite=Lax`. Setting it back without those attributes may
-well be wrong. A run that parsed every attribute and then read the cookie
-back out of the context to confirm it had landed still got a 429, so that is
-not the whole story either.
-
-The likely missing piece, untested: DataDome's answer is normally submitted
-by the challenge page's own JavaScript, and Expedia has a further step on top
-of it — the page config carries `"validatePath": "/botOrNot/validate"`.
-Pasting a cookie skips both. A working integration probably has to drive the
-widget rather than swap a cookie behind it.
-
-**So: not a dead end, but not a solved problem either, and this repo ships no
-DataDome path.** Beyond the above, the reasons are unchanged: the recommended
-path never meets a challenge at all — a real local Chrome on a residential
-exit returns 50/50 cards for nothing — and a solve cannot help either the
-browserless client or `--cdp-endpoint`, whose exit is not one you can hand to
-a solver.
-
-> **Still not exercised: this repo's own solver path.** It fires only when
-> Expedia's handler picks reCAPTCHA, and across every run here — local,
-> proxied and remote — it picked DataDome. The DataDome work above was done
-> with a standalone script against the 2Captcha API, not through this
-> repo's `--solve-captcha`, which deliberately does not offer DataDome to a
-> solver (see above for why).
+The recommended path still does not need any of this. A real local Chrome
+on a residential exit returned 50/50 cards with no challenge at all
+(2026-09-14). The browserless clients get no DataDome path: there is no
+browser to carry the cookie.
 
 ### Captchas: what this repo can and cannot solve
 
@@ -561,17 +612,12 @@ as data rather than markup —
 "powComplexity": 20     (a proof-of-work variant)
 ```
 
-This repo solves **reCAPTCHA v2/v3 and nothing else**. So a challenge is only
-offered to the solver when `whichChallenge` names reCAPTCHA; every other pick
-— including DataDome, which is what every measured refusal here actually was
-— is reported as **blocked**, and **no solve is attempted and nothing is
-charged**.
-
-That is a deliberate scope choice, not a claim that the others are
-unsolvable: DataDome on this site was solved by hand against the 2Captcha API
-and did buy access (see above). It is not wired in because the recommended
-path never meets a challenge, and because a DataDome solve needs a sticky
-proxy session the rest of this tool does not manage.
+This repo solves **DataDome's slider** (above) and **reCAPTCHA v2/v3**.
+A challenge is offered to a solver only when `whichChallenge` names one of
+those two. Every other pick (Arkose, Turnstile, the proof-of-work) is
+reported as **blocked**: no solve is attempted and nothing is charged. This
+repo does not implement those three; that is not a claim that they cannot be
+solved.
 
 Note also that `akamai` is *not* usable as a block marker here. Vrbo is
 fronted by Akamai Bot Manager and every good page loads its sensor script, so

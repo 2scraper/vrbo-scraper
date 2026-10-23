@@ -15,6 +15,10 @@ unreadable sidecar, or a run that did not go through a local proxy, is
 reported as such and is not a failure here (the exit-code steps judge the
 run itself). A run that went over its proxy budget prints
 `::error::stopped: proxy budget N MB exceeded` and exits 1.
+
+When the run met a captcha, a second line gives the captcha fields:
+tasks created, answers returned, answers accepted, and each attempt's
+outcome.
 """
 
 import json
@@ -39,6 +43,22 @@ def _mb(n):
     return f"{value:g} MB" if value == int(value) else f"{value:.1f} MB"
 
 
+def _captcha_line(label, meta):
+    """One line on what the run met and bought, or None when it met no
+    captcha. Never a failure: the exit-code steps judge the run."""
+    if not isinstance(meta, dict) or not meta.get("captcha_attempts"):
+        return None
+    outcomes = ", ".join(
+        "p%s %s%s" % (a.get("page"), a.get("outcome"),
+                      "" if a.get("accepted") is None
+                      else (" accepted" if a["accepted"] else " refused"))
+        for a in meta["captcha_attempts"])
+    return (f"**{label}**: captcha {meta.get('captcha_kind')}: "
+            f"{meta.get('captcha_solves', 0)} task(s) created, "
+            f"{meta.get('captcha_solved', 0)} solved, "
+            f"{meta.get('captcha_accepted', 0)} accepted ({outcomes})")
+
+
 def main(argv):
     if len(argv) != 3:
         print("usage: proxy_traffic.py <label> <out-prefix>")
@@ -57,11 +77,17 @@ def main(argv):
         cap_text = _mb(cap) if cap else "no budget"
         line = f"**{label}**: proxy traffic {used:.1f} MB of {cap_text}"
         exceeded = bool(meta.get("proxy_budget_exceeded"))
-    print(line)
+    lines = [line]
+    captcha = _captcha_line(label, meta)
+    if captcha:
+        lines.append(captcha)
+    for each in lines:
+        print(each)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
-            f.write(line + "\n\n")
+            for each in lines:
+                f.write(each + "\n\n")
     if exceeded:
         print(f"::error::stopped: proxy budget {cap_text} exceeded")
         return 1

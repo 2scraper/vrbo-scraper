@@ -9,25 +9,24 @@ sign-in, checkout, anything) — this is deliberate, not scoped to any one
 page. If Vrbo renders a reCAPTCHA challenge anywhere — account, sign-in
 and checkout flows are the usual places — this fires.
 
-**The challenge this site actually serves is not one this module solves.**
-Vrbo's refusal is Expedia's own "Bot or Not?" handler (HTTP 429), which
-picks its vendor per request and names the pick in its page config
-(`whichChallenge`). Every measured refusal in the README picked DataDome.
-product_parser offers a challenge to this module only when that pick is
-reCAPTCHA, so on this site the module is a contingency rather than part of
-the happy path — and a scraper that cannot name what stopped it is much
-harder to fix.
+**The challenge this site actually serves is DataDome**, through Expedia's
+own "Bot or Not?" handler (HTTP 429), which picks its vendor per request and
+names the pick in its page config (`whichChallenge`). Every measured refusal
+in the README picked DataDome. That has its own path at the bottom of this
+file ("DataDome"): a `DataDomeSliderTask` solved through the browser's own
+proxy exit and User-Agent, the returned cookie installed with the page's own
+cookie attributes, the page re-loaded, and the handler's own validate step
+if it is still there. The reCAPTCHA path below is offered a page only when
+the handler picks reCAPTCHA.
 
-Detection therefore stays BROAD (which challenge a visitor meets depends on
-the exit and on what the address has been doing) while spending stays
-NARROW: `--solve-captcha when-blocked` is the default and counts product
-links before paying, `page_flow.SOLVES_PER_PAGE` caps a page at one
-purchase, and `page_flow.STATE_POLICY` — not this file — decides which state
-is worth money at all.
+Detection stays BROAD (which challenge a visitor meets depends on the exit
+and on what the address has been doing) while spending stays NARROW:
+`--solve-captcha when-blocked` is the default and counts product links
+before paying, `page_flow.SOLVES_PER_PAGE` caps a page at one purchase
+across every call site, retry and rotation, and `page_flow.STATE_POLICY` —
+not this file — decides which state is worth money at all.
 
-There is deliberately no DataDome path here. See "No DataDome solver" below.
-
-Flow:
+reCAPTCHA flow:
   1. Both detectors run and are reconciled (see reconcile_detections) to decide
      the variant: v3, v2-invisible or v2-checkbox. The parameters differ per
      variant and are not interchangeable — v3 params sent for a v2-invisible
@@ -43,7 +42,7 @@ code gets a turn — treat `Captcha.solveFinished` as the success signal and kee
 this path as the fallback rather than assuming every detection completes.
 This module is the path for a browser you launched yourself.
 
-No other captcha vendor is integrated (per spec: no competitors).
+No other solving provider is integrated: 2Captcha only.
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ import time
 import logging
 from dataclasses import dataclass
 from typing import Optional, Tuple
-from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
+from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode, unquote
 
 import requests
 
@@ -704,32 +703,570 @@ INJECT_TOKEN_JS = """
 solve_recaptcha_v3 = solve_recaptcha
 
 
+
+
 # ===========================================================================
-# What is deliberately NOT here — No DataDome solver
+# DataDome — the challenge Expedia's "Bot or Not?" handler actually picks here
 # ===========================================================================
-# The sibling repo in this family carries a whole second solver for its
-# site's OWN first-party image captcha ("Enter the characters you see below",
-# a JPEG of distorted text and a GET form). Roughly 190 lines of it, and none
-# of it is ported here, because this site has no such page.
+# Every measured refusal on this site named `whichChallenge:
+# datadome-challenge`. The handler page then loads DataDome's own tag from
+# the site's origin (`/dd/tags.js`, endpoint `/dd/js/`). When the tag's post
+# is refused it fires `dd_blocked`, and the page mounts DataDome's slider
+# iframe (`geo.captcha-delivery.com/captcha/?...`) inside
+# `#DATADOME-CHALLENGE`. When the tag's post is NOT refused, the page
+# validates by itself and leaves for the destination: that is the
+# self-clearing case, and it costs nothing, so it is waited for first.
 #
-# Nor is there a DataDome path, although DataDome is what Expedia's
-# "Bot or Not?" handler picked on every measured refusal here. The README
-# records why: `DataDomeSliderTask` solved the slider in testing, but
-# applying the returned cookie did not reliably get a request in, and a
-# control run with no solve at all was served just as often. A DataDome
-# solve also needs a sticky proxy session this tool does not manage, and
-# the recommended path (a real local Chrome on a residential exit) never
-# met a challenge. So product_parser reports any non-reCAPTCHA pick as
-# "blocked" rather than "challenge", and no solve is attempted and nothing
-# is charged. This is "this repo does not implement it", not "it cannot be
-# solved".
+# What the site's own challenge bundle (captcha-pwa root-challenge.*.js,
+# read 2026-10-23) does after the slider passes: on `dd_response_passed` it
+# POSTs `validatePath` (`/botOrNot/validate`) with the header
+# `X-Exchange-Handshake: <exchangeHandshake>` and the JSON body
+# `{"datadome-response": {"ddChallengeType": <responseType>},
+#   "destination": <destination>, "exchangeHandshake": <exchangeHandshake>}`,
+# and on `{"success": true}` replaces the location with the destination. The
+# tag runs with `disableAutoRefreshOnCaptchaPassed`, so the cookie alone is
+# not what the page waits for. That is read from the served code, not from a
+# captured exchange: `ddChallengeType` here is "captcha", the slider's type,
+# and has not been seen on the wire.
 #
-# The reCAPTCHA / hCaptcha / Turnstile machinery above IS kept, and that is a
-# deliberate asymmetry rather than an inconsistency. Detection stays broad
-# because which challenge a visitor meets depends on the exit country and on
-# what the address has been doing — a narrow list is how a challenge gets
-# reported as an empty page months later. A solver for a challenge this site
-# has never been observed to serve is dead code; a DETECTOR for one is cheap
-# insurance: a detection that fires on a page whose properties
-# have already rendered guards nothing, which is why the default is
-# `when-blocked` and why it counts property links before it spends.
+# The 2Captcha side, per https://2captcha.com/api-docs/datadome-slider-captcha
+# (checked 2026-10-23): task type `DataDomeSliderTask`, required fields
+# websiteURL, captchaUrl (the iframe's src), userAgent, proxyType,
+# proxyAddress, proxyPort; proxyLogin/proxyPassword optional. The answer is
+# `solution.cookie`, a `datadome=...; Path=/; Secure; SameSite=Lax` string.
+# A proxy is REQUIRED, and it has to be the exit the browser uses: the cookie
+# is bound to the address that earned it. A captchaUrl with `t=bv` means
+# the exit is banned and the docs say to change it, so nothing is bought.
+
+DATADOME_TASK_TYPE = "DataDomeSliderTask"
+# 38-68 s measured for 5 solves on 2026-09-14, so 180 s is ample headroom
+# without letting a stuck task hold the run.
+DATADOME_MAX_WAIT_S = 180
+DATADOME_POLL_S = 5
+# How long the challenge page gets to either mount the slider or clear by
+# itself before anything is decided. The widget mounted about 3 s after
+# load when measured.
+DATADOME_SETTLE_MS = 15000
+DATADOME_CONTAINER_SELECTOR = "#DATADOME-CHALLENGE"
+DATADOME_FRAME_SELECTOR = 'iframe[src*="captcha-delivery.com"]'
+DATADOME_COOKIE = "datadome"
+# The slider's response type, for the site's own validate step.
+DATADOME_RESPONSE_TYPE = "captcha"
+
+_CAPTCHA_DELIVERY_HOST_RE = re.compile(r"(^|\.)captcha-delivery\.com$", re.I)
+
+
+def captcha_url_verdict(captcha_url: Optional[str]) -> Tuple[bool, str]:
+    """(worth buying?, reason) for a DataDome iframe src.
+
+    Checked BEFORE the purchase. `t=bv` is DataDome saying the exit itself
+    is banned, and 2Captcha's docs say a solve will not help from there.
+    An interstitial (the device check, not the slider) is not what
+    `DataDomeSliderTask` solves.
+    """
+    if not captcha_url:
+        return False, "no_widget"
+    parsed = urlparse(captcha_url)
+    if parsed.scheme != "https" or not _CAPTCHA_DELIVERY_HOST_RE.search(
+            parsed.hostname or ""):
+        return False, "not_captcha_delivery"
+    if "/interstitial" in parsed.path:
+        return False, "interstitial"
+    t = dict(parse_qsl(parsed.query)).get("t")
+    if t == "bv":
+        return False, "exit_banned"
+    return True, f"t={t}" if t else "t=?"
+
+
+def task_proxy_fields(proxy_url: Optional[str]) -> dict:
+    """The task's proxy fields for the exit the browser uses.
+
+    `https://` maps to `http`: 2Captcha's proxyType takes http, socks4 or
+    socks5, and an HTTP proxy reached over TLS is still an HTTP proxy to it.
+    Raises ValueError (credentials masked) for a URL it cannot express.
+    """
+    parsed = urlparse(proxy_url or "")
+    scheme = (parsed.scheme or "").lower()
+    kind = {"http": "http", "https": "http", "socks4": "socks4",
+            "socks5": "socks5", "socks5h": "socks5"}.get(scheme)
+    if not kind or not parsed.hostname or not parsed.port:
+        raise ValueError("cannot pass this proxy to the solver: %s"
+                         % _redact(proxy_url))
+    fields = {"proxyType": kind, "proxyAddress": parsed.hostname,
+              "proxyPort": int(parsed.port)}
+    if parsed.username:
+        fields["proxyLogin"] = unquote(parsed.username)
+    if parsed.password:
+        fields["proxyPassword"] = unquote(parsed.password)
+    return fields
+
+
+def datadome_task(website_url: str, captcha_url: str, user_agent: str,
+                  proxy_url: str) -> dict:
+    """The `task` object for createTask."""
+    task = {"type": DATADOME_TASK_TYPE, "websiteURL": website_url,
+            "captchaUrl": captcha_url, "userAgent": user_agent}
+    task.update(task_proxy_fields(proxy_url))
+    return task
+
+
+def solve_datadome(api_key: str, *, website_url: str, captcha_url: str,
+                   user_agent: str, proxy_url: str,
+                   api_base: str = TWOCAPTCHA_API_V2,
+                   poll_interval: float = DATADOME_POLL_S,
+                   max_wait: float = DATADOME_MAX_WAIT_S,
+                   sleep=time.sleep) -> dict:
+    """createTask + getTaskResult for a DataDome slider; returns
+    {"cookie": str, "cost": str|None, "seconds": float}.
+
+    Raises CaptchaUnsolvable for 2Captcha's "not from this exit" codes and
+    RuntimeError/TimeoutError otherwise, every message redacted. The proxy's
+    credentials travel only in the request body, never in a message.
+    """
+    task = datadome_task(website_url, captcha_url, user_agent, proxy_url)
+    logger.info("createTask: %s via %s:%s", task["type"],
+                task["proxyAddress"], task["proxyPort"])
+    started = time.monotonic()
+    try:
+        created = requests.post(f"{api_base}/createTask",
+                                json={"clientKey": api_key, "task": task},
+                                timeout=30)
+        created.raise_for_status()
+        payload = created.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError("createTask failed: %s" % _redact(exc)) from None
+    if payload.get("errorId"):
+        code = payload.get("errorCode") or "?"
+        cls = CaptchaUnsolvable if code in _UNSOLVABLE_CODES else RuntimeError
+        raise cls(f"createTask failed: {code}")
+    task_id = payload.get("taskId")
+    if not task_id:
+        raise RuntimeError("createTask returned no taskId")
+
+    waited = 0.0
+    while waited < max_wait:
+        sleep(poll_interval)
+        waited += poll_interval
+        try:
+            got = requests.post(f"{api_base}/getTaskResult",
+                                json={"clientKey": api_key, "taskId": task_id},
+                                timeout=30)
+            got.raise_for_status()
+            result = got.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise RuntimeError("getTaskResult failed: %s"
+                               % _redact(exc)) from None
+        if result.get("errorId"):
+            code = result.get("errorCode") or "?"
+            cls = CaptchaUnsolvable if code in _UNSOLVABLE_CODES else RuntimeError
+            raise cls(f"getTaskResult failed: {code}")
+        if result.get("status") == "ready":
+            cookie = (result.get("solution") or {}).get("cookie")
+            if not cookie or DATADOME_COOKIE + "=" not in cookie:
+                raise RuntimeError("task ready but no datadome cookie in "
+                                   "the solution")
+            return {"cookie": cookie, "cost": result.get("cost"),
+                    "seconds": round(time.monotonic() - started, 1)}
+    raise TimeoutError(f"2captcha did not return a DataDome cookie within "
+                       f"{max_wait:.0f}s")
+
+
+def parse_cookie_string(text: str) -> dict:
+    """A `Set-Cookie`-shaped string as {name, value, domain, path, secure,
+    httpOnly, sameSite, max_age, expires}; absent attributes are None."""
+    parts = [p.strip() for p in (text or "").split(";") if p.strip()]
+    out = {"name": None, "value": None, "domain": None, "path": None,
+           "secure": None, "httpOnly": None, "sameSite": None,
+           "max_age": None, "expires": None}
+    if not parts or "=" not in parts[0]:
+        return out
+    out["name"], out["value"] = (x.strip() for x in parts[0].split("=", 1))
+    for attr in parts[1:]:
+        key, _, val = attr.partition("=")
+        key = key.strip().lower()
+        val = val.strip()
+        if key == "domain":
+            out["domain"] = val
+        elif key == "path":
+            out["path"] = val
+        elif key == "secure":
+            out["secure"] = True
+        elif key == "httponly":
+            out["httpOnly"] = True
+        elif key == "samesite":
+            out["sameSite"] = val.capitalize() if val else None
+        elif key == "max-age":
+            try:
+                out["max_age"] = int(val)
+            except ValueError:
+                pass
+        elif key == "expires":
+            out["expires"] = val
+    return out
+
+
+def cookie_to_install(solution_cookie: str, page_cookie: Optional[dict],
+                      page_url: str, now: Optional[float] = None) -> dict:
+    """The cookie to set, as {name, value, domain, path, secure, httpOnly,
+    sameSite, expires(epoch s or None), attrs_from}.
+
+    The VALUE is the solver's. The attributes mirror the cookie the
+    challenge page set for itself when there is one (it was Secure and
+    SameSite=Lax when measured, and the solver's string once lacked both),
+    then the solver's own attributes, then a host cookie with Secure/Lax.
+    A cookie set with different attributes from the site's own lands BESIDE
+    it rather than replacing it, and the browser then sends both.
+    """
+    sol = parse_cookie_string(solution_cookie)
+    host = urlparse(page_url).hostname or ""
+    page_cookie = page_cookie or {}
+    attrs_from = "page" if page_cookie.get("domain") else (
+        "solution" if sol.get("domain") else "default")
+    domain = page_cookie.get("domain") or sol.get("domain") or host
+    path = page_cookie.get("path") or sol.get("path") or "/"
+    secure = page_cookie.get("secure")
+    if secure is None:
+        secure = True if sol.get("secure") is None else bool(sol["secure"])
+    same_site = page_cookie.get("sameSite") or sol.get("sameSite") or "Lax"
+    http_only = page_cookie.get("httpOnly")
+    if http_only is None:
+        http_only = bool(sol.get("httpOnly"))
+    expires = None
+    base = time.time() if now is None else now
+    if sol.get("max_age") is not None:
+        expires = base + sol["max_age"]
+    elif page_cookie.get("expires") and page_cookie["expires"] > 0:
+        expires = page_cookie["expires"]
+    else:
+        expires = base + 365 * 24 * 3600
+    return {"name": sol.get("name") or DATADOME_COOKIE,
+            "value": sol.get("value") or "", "domain": domain, "path": path,
+            "secure": bool(secure), "httpOnly": bool(http_only),
+            "sameSite": same_site, "expires": int(expires),
+            "attrs_from": attrs_from}
+
+
+def _config_value(html: str, key: str) -> Optional[str]:
+    """One string value out of the handler's escaped page config."""
+    m = re.search(r'%s\\*"\s*:\s*\\*"((?:[^"\\]|\\\\u[0-9a-fA-F]{4}|\\u[0-9a-fA-F]{4})*)\\*"'
+                  % re.escape(key), html or "")
+    if not m:
+        return None
+    value = m.group(1)
+    for _ in range(3):
+        if "\\u" not in value:
+            break
+        value = re.sub(r"\\+u([0-9a-fA-F]{4})",
+                       lambda u: chr(int(u.group(1), 16)), value)
+    return value
+
+
+def expedia_validate_request(html: str) -> Optional[dict]:
+    """The site's own validate call for a passed DataDome challenge, as
+    {path, headers, body}, or None when the page config lacks a part of it.
+    """
+    path = _config_value(html, "validatePath")
+    handshake = _config_value(html, "exchangeHandshake")
+    destination = _config_value(html, "destination")
+    if not (path and path.startswith("/") and handshake and destination):
+        return None
+    return {
+        "path": path,
+        "headers": {"Accept": "application/json,text/html",
+                    "Content-Type": "application/json",
+                    "X-Exchange-Handshake": handshake},
+        "body": {"datadome-response": {"ddChallengeType": DATADOME_RESPONSE_TYPE},
+                 "destination": destination, "exchangeHandshake": handshake},
+    }
+
+
+def is_datadome_challenge(html: str) -> bool:
+    """Expedia's handler page, with DataDome as this time's pick."""
+    from product_parser import challenge_vendor, is_challenge_page
+    return bool(is_challenge_page(html)
+                and "datadome" in (challenge_vendor(html) or ""))
+
+
+# ---------------------------------------------------------------------------
+# Run-level record: what was detected, bought and accepted
+# ---------------------------------------------------------------------------
+_STATS_ATTR = "_captcha_stats"
+
+
+class CaptchaStats:
+    """Per-run captcha accounting for the sidecar.
+
+    `solves` counts purchases ATTEMPTED (a task created, each one claimed
+    from the page's SolveBudget first); `solved` counts the ones that came
+    back with an answer (what 2Captcha bills); `accepted` counts answers
+    after which the page classified as served. Accepted is the only one that
+    says the money bought anything, and even it is not proof: a no-solve
+    reload was served about one time in three when measured.
+    """
+
+    def __init__(self):
+        self.kind: Optional[str] = None
+        self.solves = 0
+        self.solved = 0
+        self.accepted = 0
+        self.attempts: list = []
+
+    def note(self, record: dict) -> dict:
+        self.kind = record.get("kind") or self.kind
+        if record.get("created"):
+            self.solves += 1
+        if record.get("returned"):
+            self.solved += 1
+        self.attempts.append(record)
+        return record
+
+    def settle(self, state: str) -> None:
+        """The state the page classified as after the latest answer."""
+        for record in reversed(self.attempts):
+            if record.get("returned") and record.get("accepted") is None:
+                record["accepted"] = state not in ("challenge", "blocked")
+                record["state_after"] = state
+                if record["accepted"]:
+                    self.accepted += 1
+                return
+            if record.get("accepted") is not None:
+                return
+
+    def sidecar(self) -> dict:
+        return {"captcha_kind": self.kind, "captcha_solves": self.solves,
+                "captcha_solved": self.solved,
+                "captcha_accepted": self.accepted,
+                "captcha_attempts": list(self.attempts)}
+
+
+def stats_of(args) -> CaptchaStats:
+    stats = getattr(args, _STATS_ATTR, None)
+    if stats is None:
+        stats = CaptchaStats()
+        try:
+            setattr(args, _STATS_ATTR, stats)
+        except AttributeError:
+            pass
+    return stats
+
+
+def settle(args, state: str) -> None:
+    stats_of(args).settle(state)
+
+
+def captcha_fields(args, extra: Optional[dict] = None) -> dict:
+    """Merge the run's captcha record into the sidecar's extra."""
+    extra = dict(extra or {})
+    extra.update(stats_of(args).sidecar())
+    return extra
+
+
+# ---------------------------------------------------------------------------
+# The fallback itself, driven through named operations
+# ---------------------------------------------------------------------------
+@dataclass
+class DataDomeOps:
+    """What an engine provides. Named operations, no JavaScript across this
+    boundary: each engine speaks its own driver's dialect behind them.
+
+      html() -> Optional[str]            the page's current markup
+      count(selector) -> int             matching elements (0 on any error)
+      frame_src() -> Optional[str]       the DataDome iframe's src
+      user_agent() -> str                navigator.userAgent of THIS browser
+      page_url() -> str                  the page's current URL
+      get_cookie(name, url) -> Optional[dict]   {name,value,domain,path,
+                                         secure,httpOnly,sameSite,expires}
+      set_cookie(cookie) -> None         install it in this browser
+      post_json(path, headers, body) -> (status, parsed JSON or None)
+                                         an in-page fetch, same origin
+      navigate(url) -> Optional[int]     load url; the HTTP status if known
+      sleep(ms) -> None
+    """
+    html: object
+    count: object
+    frame_src: object
+    user_agent: object
+    page_url: object
+    get_cookie: object
+    set_cookie: object
+    post_json: object
+    navigate: object
+    sleep: object
+
+
+def _wait_for_widget(ops: DataDomeOps, settle_ms: int, poll_ms: int):
+    """('widget', src) | ('cleared', None) | ('timeout', None)."""
+    waited = 0
+    while True:
+        src = ops.frame_src()
+        if src:
+            return "widget", src
+        # A page mid-navigation has no markup to read; that is not "cleared".
+        html = ops.html()
+        if (html is not None and not ops.count(DATADOME_CONTAINER_SELECTOR)
+                and not is_datadome_challenge(html)):
+            return "cleared", None
+        if waited >= settle_ms:
+            return "timeout", None
+        ops.sleep(poll_ms)
+        waited += poll_ms
+
+
+def datadome_fallback(ops: DataDomeOps, *, api_key: Optional[str],
+                      proxy_url: Optional[str], budget, nav_url: Optional[str],
+                      stats: CaptchaStats, page_num: Optional[int] = None,
+                      solve=solve_datadome, settle_ms: int = DATADOME_SETTLE_MS,
+                      poll_ms: int = 500) -> bool:
+    """Clear a DataDome pick on this page if it can be done honestly.
+
+    True when the page changed (cleared by itself, or a solve was applied
+    and the page re-loaded), so the caller re-reads and re-classifies it;
+    then `stats.settle(state)` records whether an answer was accepted.
+
+    Nothing is bought without a key, without the proxy the browser exits
+    through, without an address to re-load (a page reached by a button
+    press), without a slider on the page, for a `t=bv` exit, or once the
+    page's SolveBudget is spent. The budget is claimed immediately before
+    createTask and is never given back.
+    """
+    record = {"page": page_num, "kind": "datadome", "created": False,
+              "returned": False, "accepted": None}
+
+    # Free first: the handler validates by itself when DataDome's tag is
+    # not refused, so a slider is only waited for, never assumed.
+    found, src = _wait_for_widget(ops, settle_ms, poll_ms)
+    if found == "cleared":
+        logger.info("The DataDome challenge cleared by itself — nothing "
+                    "bought.")
+        record["outcome"] = "self_cleared"
+        stats.note(record)
+        return True
+    worth, why = captcha_url_verdict(src)
+    record["captcha_url"] = why
+    if not worth:
+        logger.warning("DataDome challenge with %s — not buying a solve%s.",
+                       "no slider mounted within %.0fs" % (settle_ms / 1000)
+                       if why == "no_widget" else why,
+                       " (DataDome marks this exit as banned; a different "
+                       "exit is the remedy)" if why == "exit_banned" else "")
+        record["outcome"] = why
+        stats.note(record)
+        return False
+    if not api_key:
+        logger.warning("DataDome slider on page %s, and no TWOCAPTCHA_KEY — "
+                       "not solving it.", page_num)
+        record["outcome"] = "no_key"
+        stats.note(record)
+        return False
+    if not proxy_url:
+        logger.warning("DataDome slider on page %s, but this browser has no "
+                       "proxy that can be handed to the solver. 2Captcha "
+                       "solves DataDome through the caller's own proxy, and "
+                       "the cookie is bound to the exit that earned it, so a "
+                       "solve from any other address would be paid for and "
+                       "refused. Not solving it.", page_num)
+        record["outcome"] = "no_proxy"
+        stats.note(record)
+        return False
+    if not nav_url:
+        logger.warning("DataDome slider on page %s, which was reached by a "
+                       "button press: there is no address to re-load after a "
+                       "solve. Not solving it.", page_num)
+        record["outcome"] = "no_address"
+        stats.note(record)
+        return False
+    if not budget.spend():
+        logger.warning("This page's solve allowance (%d) is used up — not "
+                       "buying another.", budget.limit)
+        record["outcome"] = "budget_spent"
+        stats.note(record)
+        return False
+
+    page_url = ops.page_url() or nav_url
+    user_agent = ops.user_agent() or ""
+    record["created"] = True
+    logger.warning("DataDome slider on page %s — solving it through 2Captcha "
+                   "on the browser's own exit and User-Agent.", page_num)
+    try:
+        answer = solve(api_key, website_url=page_url, captcha_url=src,
+                       user_agent=user_agent, proxy_url=proxy_url)
+    except CaptchaUnsolvable as exc:
+        logger.error("2Captcha could not solve the DataDome slider from this "
+                     "exit (%s).", _redact(exc))
+        record["outcome"], record["error"] = "unsolvable", _redact(exc)[-80:]
+        stats.note(record)
+        return False
+    except Exception as exc:  # noqa: BLE001 — a solver failure is not a crash
+        logger.error("Solving the DataDome slider failed (%s).", _redact(exc))
+        record["outcome"], record["error"] = "solve_failed", _redact(exc)[-80:]
+        stats.note(record)
+        return False
+    record["returned"] = True
+    record["seconds"] = answer.get("seconds")
+    record["cost"] = answer.get("cost")
+
+    html_before = ops.html() or ""
+    own = ops.get_cookie(DATADOME_COOKIE, page_url)
+    cookie = cookie_to_install(answer["cookie"], own, page_url)
+    record["cookie_attrs_from"] = cookie.pop("attrs_from")
+    try:
+        ops.set_cookie(cookie)
+        back = ops.get_cookie(DATADOME_COOKIE, page_url) or {}
+        record["cookie_applied"] = back.get("value") == cookie["value"]
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Could not set the DataDome cookie: %s", _redact(exc))
+        record["cookie_applied"] = False
+
+    # 1. The cookie, then the page again.
+    #    A handler page that comes back is given the same settle as the
+    #    first: with an accepted cookie its own tag is not refused, and the
+    #    page validates and leaves by itself. A slider mounting again means
+    #    DataDome did not take the cookie.
+    record["reload_status"] = ops.navigate(nav_url)
+    html_after = ops.html() or ""
+    still = is_datadome_challenge(html_after)
+    if still:
+        found, _ = _wait_for_widget(ops, settle_ms, poll_ms)
+        record["after_reload"] = found
+        html_after = ops.html() or html_after
+        still = found != "cleared"
+    after = ops.get_cookie(DATADOME_COOKIE, page_url) or {}
+    record["cookie_kept_after_reload"] = after.get("value") == cookie["value"]
+    record["still_challenged_after_reload"] = still
+
+    # 2. Still the handler: its own validate step, as its bundle makes it,
+    #    on the handshake of the page now in front of us.
+    if still:
+        if not record["cookie_kept_after_reload"]:
+            # The re-load answered with a cookie of its own. The validate
+            # step is asked about THIS session, so the answer goes back in.
+            try:
+                ops.set_cookie(cookie)
+                record["cookie_reapplied"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not re-apply the DataDome cookie: %s",
+                               _redact(exc))
+        request = (expedia_validate_request(html_after)
+                   or expedia_validate_request(html_before))
+        if request:
+            try:
+                status, body = ops.post_json(request["path"],
+                                             request["headers"],
+                                             request["body"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("The site's validate step failed: %s",
+                               _redact(exc))
+                status, body = None, None
+            record["validate_status"] = status
+            record["validate_success"] = bool(
+                isinstance(body, dict) and body.get("success") is True)
+            logger.info("Validate step: HTTP %s, success=%s.", status,
+                        record["validate_success"])
+            if record["validate_success"]:
+                record["validate_reload_status"] = ops.navigate(nav_url)
+        else:
+            record["validate_status"] = None
+            record["validate_success"] = None
+    record["outcome"] = "solved"
+    stats.note(record)
+    return True

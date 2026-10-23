@@ -665,11 +665,11 @@ def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
         extra=extra)
     if wrote_output:
         write_run_meta(out_prefix, meta)
-    if extra and "proxy_bytes" in extra:
-        # A metered (proxied) run also records itself in the attempt
-        # sidecar, every time: a run that wrote no rows leaves no
-        # `<out>.meta.json`, and what it spent through the proxy must still
-        # be on disk somewhere.
+    if extra and ("proxy_bytes" in extra or extra.get("captcha_attempts")):
+        # A metered (proxied) run, or one that met a captcha, also records
+        # itself in the attempt sidecar, every time: a run that wrote no
+        # rows leaves no `<out>.meta.json`, and what it spent through the
+        # proxy or on a solve must still be on disk somewhere.
         write_attempt_meta(out_prefix, meta)
 
     if not rows:

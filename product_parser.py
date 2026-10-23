@@ -554,14 +554,14 @@ CHALLENGE_MARKERS: Tuple[str, ...] = (
     "DATADOME-CHALLENGE",
 )
 
-# Which vendors this repo can actually pay to have solved. `captcha_solver`
-# implements reCAPTCHA v2 and v3 and nothing else — no DataDome, no Arkose,
-# no proof-of-work — so a challenge naming one of those is reported as
-# `blocked` rather than `challenge`, and no solve is attempted and nothing is
-# charged (the "detected ≠ blocking ≠ paying"). The measured challenge on
-# this site was `datadome-challenge`, so this distinction is the normal case
-# here rather than an edge one.
-SOLVABLE_CHALLENGES: Tuple[str, ...] = ("recaptcha",)
+# Which vendors this repo can actually pay to have solved: reCAPTCHA v2/v3,
+# and DataDome's slider (captcha_solver's "DataDome" section). A pick naming
+# anything else — Arkose, Turnstile, the proof-of-work — is reported as
+# `blocked` rather than `challenge`, so no solve is attempted and nothing is
+# charged ("detected != blocking != paying"). Being `challenge` does not by
+# itself buy anything either: the DataDome path still needs a key, the
+# browser's own proxy exit, an address to re-load and a slider on the page.
+SOLVABLE_CHALLENGES: Tuple[str, ...] = ("recaptcha", "datadome")
 
 _WHICH_CHALLENGE_RE = re.compile(r'whichChallenge\\*"\s*:\s*\\*"([a-z0-9_-]+)',
                                  re.I)

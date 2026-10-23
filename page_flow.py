@@ -539,6 +539,15 @@ def block_advice(html: Optional[str], headless: bool, has_pool: bool) -> str:
         lead = (f"blocked ({marker}) — Expedia's challenge handler picked "
                 f"{vendor!r} this time, which this repo has no solver for, so "
                 f"no solve was attempted and nothing was charged")
+    elif vendor and "datadome" in vendor:
+        lead = (f"blocked ({marker}) — Expedia's challenge handler picked "
+                f"DataDome and it was not cleared. The DataDome fallback buys "
+                f"a solve only with TWOCAPTCHA_KEY set, a proxy the browser "
+                f"itself exits through (not --cdp-endpoint, not Selenium with "
+                f"a proxy login), a slider on the page and an address to "
+                f"re-load; captcha_attempts in the sidecar says which of "
+                f"those stopped it, or whether an answer was bought and "
+                f"refused")
     hints = [
         "how this site scores the exit address is noisy: the same address "
         "was served and challenged minutes apart, and bundled Chromium and "

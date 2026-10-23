@@ -10,6 +10,21 @@ that is a fix, and the release notes lead with it.
 
 ## [Unreleased]
 
+> **Behaviour change.** When Expedia's handler picks **DataDome**, a run with
+> `TWOCAPTCHA_KEY` and a `--proxy` that the browser itself exits through now
+> **buys at most one DataDome solve per page** (`DataDomeSliderTask`,
+> 2Captcha; about $0.00145 each when measured on 2026-09-14). It then installs
+> the cookie and re-loads the page. The page is `challenge` now, not
+> `blocked`; the exit code when it is not cleared is still **3**. Nothing is
+> bought:
+> - over `--cdp-endpoint`, or without a proxy;
+> - by Selenium with a proxy login;
+> - for a page reached by a button press;
+> - for `t=bv`;
+> - when the page clears by itself within 15 s.
+>
+> To keep the old behaviour, leave `TWOCAPTCHA_KEY` unset.
+
 > **Behaviour change.** A page turn that gets no grid back (the site's
 > `/graphql` answered HTTP 429, with no `Retry-After`) is now retried
 > **once** in all three engines, after a random 30-60 s pause, in the same
@@ -42,6 +57,36 @@ that is a fix, and the release notes lead with it.
 
 ### Added
 
+- **A DataDome fallback through 2Captcha, in all three engines.**
+  - **Settle first.** The challenge page gets up to 15 s to clear by itself
+    or mount its slider.
+  - **Solve.** The slider's iframe URL, the browser's own
+    `navigator.userAgent` and the browser's current proxy exit go into a
+    `DataDomeSliderTask`. That exit includes the sticky `-session-` login.
+    The task is polled for up to 180 s, and only after the page's one-solve
+    allowance has been claimed.
+  - **Apply.** The returned `datadome` cookie is installed with the
+    challenge page's own cookie domain, path, `Secure` and `SameSite`, read
+    back, and the page is re-loaded.
+  - **Validate.** If the handler page comes back, the engine waits for it
+    to clear again. It then makes the handler's own validate call
+    (`POST /botOrNot/validate` with the page's `exchangeHandshake`), as the
+    site's challenge bundle makes it. That call has not been observed on
+    the wire.
+  - **Selenium** can do this only through a proxy without a login.
+  - **Sidecar.** It gains `captcha_kind`, `captcha_solves` (tasks created),
+    `captcha_solved` (answers returned), `captcha_accepted` (answers after
+    which the page was served) and `captcha_attempts` (one record per
+    decision, with the reason nothing was bought).
+    `<out>.latest_attempt.meta.json` is now also written for any run that met
+    a captcha, with or without a proxy.
+  - **Tests.** Offline checks drive a stub solver API on 127.0.0.1, a
+    scripted browser and each engine's real fetch loop. An opt-in
+    `DATADOME_BROWSER=1` group runs each engine's cookie, iframe, UA and
+    validate operations in a real Chromium against a local stub site.
+- **The canary's walk passes `TWOCAPTCHA_KEY`**, so a DataDome pick on its
+  first page is solved through `VRBO_PROXY`. The job summary reports the
+  captcha fields, and the attempt sidecar is uploaded.
 - `--throttle-wait-seconds` in all three engines (default 45, `0` = no
   retry): one paced retry of a page turn that got no grid back. The pause is
   a random 2/3 to 4/3 of the value. The proxy budget is checked before the
