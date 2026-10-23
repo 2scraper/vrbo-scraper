@@ -119,6 +119,7 @@ jobs:
             canary_run.json
             canary_run.csv
             canary_run.meta.json
+            canary_run.latest_attempt.meta.json
             canary_run.html*
             canary_run_page*_debug.*
           if-no-files-found: ignore
@@ -129,6 +130,10 @@ jobs:
     timeout-minutes: 25
     env:
       VRBO_PROXY: ${{ secrets.VRBO_PROXY }}
+      # For the DataDome fallback: a DataDome pick on page 1 is solved
+      # (at most once per page) through this same VRBO_PROXY exit. Without
+      # it the walk still runs and a DataDome pick is reported as blocked.
+      TWOCAPTCHA_KEY: ${{ secrets.TWOCAPTCHA_KEY }}
     steps:
       - name: Require the VRBO_PROXY secret
         # Not a skip: a skipped pagination check reads exactly like a passing
@@ -138,6 +143,12 @@ jobs:
           if [ -z "$VRBO_PROXY" ]; then
             echo "::error::The VRBO_PROXY secret is not set, so pagination was NOT tested. From a GitHub runner's address the page turn was answered HTTP 429 on all 13 scheduled runs that pressed next (2026-09-25 to 10-15). Add a residential exit: gh secret set VRBO_PROXY --repo 2scraper/vrbo-scraper"
             exit 1
+          fi
+
+      - name: Say whether the DataDome fallback is armed
+        run: |
+          if [ -z "$TWOCAPTCHA_KEY" ]; then
+            echo "::warning::TWOCAPTCHA_KEY is not set, so a DataDome pick on the walk's first page is reported as blocked (exit 3) and nothing is solved: gh secret set TWOCAPTCHA_KEY --repo 2scraper/vrbo-scraper"
           fi
 
       - uses: actions/checkout@v4
@@ -177,6 +188,7 @@ jobs:
           url="https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=${start}&endDate=${end}&adults=2"
           xvfb-run -a python3 playwright_scraper.py --url "$url" \
             --pages 3 --delay 15 --retries 4 --proxy-budget-mb 15 --block-media \
+            --solve-captcha when-blocked \
             --out canary_walk --dump-html canary_walk.html
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
@@ -208,6 +220,7 @@ jobs:
             canary_walk.json
             canary_walk.csv
             canary_walk.meta.json
+            canary_walk.latest_attempt.meta.json
             canary_walk.html*
             canary_walk_page*_debug.*
           if-no-files-found: ignore

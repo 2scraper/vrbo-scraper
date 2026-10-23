@@ -34,11 +34,32 @@ run then tells you which vendor the challenge handler picked, e.g.
 `blocked (datadome-challenge)`, and saves the page to
 `<out>_page1_debug.html` and `.png`.
 
-**Can I solve it?** Only if `whichChallenge` in that dump says reCAPTCHA.
-This repo implements reCAPTCHA v2/v3 and nothing else, so a DataDome, Arkose,
+**Can I solve it?** A DataDome or reCAPTCHA pick, yes. An Arkose,
 Turnstile or proof-of-work pick is reported as blocked and **nothing is
-charged**. That is deliberate — paying for a solve that cannot be delivered
-is worse than reporting the block.
+charged**: this repo does not implement those.
+
+For DataDome, the run buys a solve only with all of these:
+- `TWOCAPTCHA_KEY` set;
+- a `--proxy` that the browser itself exits through (Playwright or
+  pyppeteer, or Selenium with a proxy that has no login; never
+  `--cdp-endpoint`);
+- a slider on the page;
+- page 1, which has an address to re-load.
+
+The cookie is bound to the exit that earned it, so a solve from any other
+address would be paid for and refused.
+
+When a page still ends `blocked (datadome-challenge)`, read
+`captcha_attempts` in `<out>.latest_attempt.meta.json`:
+- `outcome` names what stopped the purchase (`no_key`, `no_proxy`,
+  `no_widget`, `exit_banned` for `t=bv`, `no_address`, `budget_spent`), or
+  says `solved`;
+- `accepted: false` after `solved` means an answer was bought, applied and
+  refused. `cookie_kept_after_reload` and `validate_status` say how far it
+  got.
+
+One solve per page is the limit, so a refused answer is not bought again on
+a retry or a rotation.
 
 ---
 
@@ -240,10 +261,11 @@ endpoint: connected in ~3s, `Captcha.setAutoSolve` enabled, and then HTTP
 **429** with a 116 KB `Bot or Not?` page on the first request and on both
 retries, `whichChallenge: datadome-challenge`.
 
-The remote browser is a real Chrome — which is what this site cares about
-most — but its exit address is refused. Nothing on your side fixes that, and
-no solve is attempted, because DataDome is not something this repo or the
-endpoint's auto-solve can answer.
+The remote browser is a real Chrome, which is what this site cares about
+most, but its exit address is refused. Nothing on your side fixes that. No
+solve is attempted: the endpoint's auto-solve did not clear the challenge,
+and this repo's DataDome fallback needs a proxy it can hand to the solver.
+The Scraping Browser's exit is not one.
 
 Use a local real Chrome (the default) and a residential `--proxy` if you
 need to spread the `/graphql` rate limit. Re-test the Scraping Browser

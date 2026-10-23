@@ -441,8 +441,11 @@ def test_page_state():
                     detect_page_state(fixture(name), 200, URLS[name]) == "empty")
         ok &= check(f"{name} is_no_results", is_no_results(fixture(name)))
     ok &= check("a good page is NOT no_results", not is_no_results(fixture("LISTING_US")))
-    ok &= check("the 429 challenge handler is blocked",
-                detect_page_state(fixture("BLOCK_429"), 429, URLS["BLOCK_429"]) == "blocked")
+    # `challenge`, not `blocked`, since DataDome has a solver path here; it
+    # still counts as blocked for the exit code when it is not cleared.
+    ok &= check("the 429 challenge handler (a DataDome pick) is a challenge",
+                detect_page_state(fixture("BLOCK_429"), 429, URLS["BLOCK_429"]) == "challenge"
+                and page_flow.counts_as_blocked("challenge"))
     # Chromium's own answer when a proxy is dead: 39 bytes, no markup, and
     # nothing a vendor-marker list would recognise. Only "was this built out
     # of the site's own assets?" answers correctly.
@@ -495,19 +498,23 @@ def test_challenge_is_not_always_solvable():
                 challenge_vendor(block) == "datadome-challenge")
     ok &= check("detect_block_marker names the vendor",
                 detect_block_marker(block) == "datadome-challenge")
-    # This repo solves reCAPTCHA and nothing else. A DataDome pick must
-    # therefore be `blocked`, so no solve is attempted and nothing is
-    # charged.
-    ok &= check("a DataDome pick is NOT offered to the solver",
-                detect_bot_challenge(block) is None)
-    ok &= check("and the state is blocked, not challenge",
-                detect_page_state(block, 429, URLS["BLOCK_429"]) == "blocked")
+    # This repo solves reCAPTCHA and DataDome's slider. A DataDome pick is
+    # therefore a `challenge` (the old check pinned `blocked`, from before
+    # the DataDome path existed); a pick with no solver stays `blocked`.
+    ok &= check("a DataDome pick IS offered to the solver",
+                detect_bot_challenge(block) == "datadome-challenge")
+    ok &= check("and the state is challenge",
+                detect_page_state(block, 429, URLS["BLOCK_429"]) == "challenge")
+    arkose = block.replace("datadome-challenge", "arkose-challenge")
+    ok &= check("a pick with no solver (Arkose) is NOT offered, and is blocked",
+                detect_bot_challenge(arkose) is None
+                and detect_page_state(arkose, 429, URLS["BLOCK_429"]) == "blocked")
     ok &= check("blocked does not buy a solve",
                 page_flow.should_solve("blocked") is False)
     ok &= check("challenge does buy one",
                 page_flow.should_solve("challenge") is True)
     ok &= check("SOLVABLE_CHALLENGES names only what the solver implements",
-                tuple(SOLVABLE_CHALLENGES) == ("recaptcha",))
+                tuple(SOLVABLE_CHALLENGES) == ("recaptcha", "datadome"))
     # A reCAPTCHA pick, on the other hand, IS worth a solve. Built by
     # substituting the vendor in the real fixture, so the surrounding markup
     # is the site's.
@@ -523,7 +530,11 @@ def test_challenge_is_not_always_solvable():
                 "channel=chrome" not in advice and "reads the CLIENT" not in advice)
     ok &= check("it says the exit's score is noisy and the browser is not the first lever",
                 "noisy" in advice and "not the first lever" in advice)
-    ok &= check("it says the vendor could not be solved and nothing was charged",
+    ok &= check("for DataDome it names what the fallback needs and where "
+                "the sidecar says what stopped it",
+                "TWOCAPTCHA_KEY" in advice and "captcha_attempts" in advice)
+    advice = page_flow.block_advice(arkose, headless=False, has_pool=False)
+    ok &= check("for a pick with no solver it says nothing was charged",
                 "nothing was charged" in advice)
     ok &= check("it names the rate response as clearable",
                 "RATE response" in advice)
@@ -4045,6 +4056,865 @@ def test_throttle_retry():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# DataDome: solve through the browser's own exit, apply, re-load, validate
+# ---------------------------------------------------------------------------
+# No request here leaves 127.0.0.1: the solver API is a stub server, and
+# every key and proxy password is an obvious fake assembled from pieces.
+_DD_KEY = "stub-" + "never-sent"
+_DD_PASS = "dd-" + "Pw-not-real"
+_DD_PROXY = ("http://acct-zone-custom-region-us-session-AbC123-sessTime-30:"
+             + _DD_PASS + "@eu.proxy.2captcha.invalid:2334")
+_DD_CAPTCHA_URL = ("https://geo.captcha-delivery.com/captcha/?initialCid=x"
+                   "&cid=y&t=fe&referer=https%3A%2F%2Fwww.vrbo.com%2Fsearch")
+_DD_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/156.0.0.0 Safari/537.36"
+_DD_SOLVED_COOKIE = "datadome=SOLVED-value; Max-Age=31536000; Path=/"
+
+
+class _StubSolverAPI:
+    """api.2captcha.com's createTask/getTaskResult on 127.0.0.1.
+
+    `script` is the list of getTaskResult answers (the last repeats);
+    `create` the createTask answer. Every request body is recorded."""
+
+    def __init__(self, create=None, script=None):
+        import http.server
+        import threading
+        stub = self
+        self.bodies = []
+        self.create = create or {"errorId": 0, "taskId": 4242}
+        self.script = list(script or [
+            {"errorId": 0, "status": "processing"},
+            {"errorId": 0, "status": "ready", "cost": "0.00145",
+             "solution": {"cookie": _DD_SOLVED_COOKIE}}])
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(
+                    int(self.headers.get("Content-Length") or 0)) or b"{}")
+                stub.bodies.append((self.path, body))
+                if self.path == "/createTask":
+                    answer = stub.create
+                else:
+                    answer = (stub.script.pop(0) if len(stub.script) > 1
+                              else stub.script[0])
+                data = json.dumps(answer).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class _FakeDataDomePage:
+    """A scripted browser for captcha_solver.DataDomeOps.
+
+    `after_reload` is what the page becomes on navigate(): "content",
+    "challenge" (a slider mounts again) or "self_clear". `widget` says
+    whether the first page mounts a slider at all."""
+
+    def __init__(self, after_reload="content", widget=True,
+                 captcha_url=_DD_CAPTCHA_URL, page_cookie=None,
+                 validate_answer=(200, {"success": True}), widget_pass=None):
+        # widget_pass: None (the engine cannot post from the frame),
+        # "clears" (the page validates and leaves) or "nothing".
+        self.widget_pass, self.frame_posts = widget_pass, []
+        self.challenge_html = FIXTURES["BLOCK_429"]
+        self.html_now = self.challenge_html
+        self.widget = widget
+        self.captcha_url = captcha_url
+        self.after_reload = after_reload
+        self.validate_answer = validate_answer
+        self.navigations, self.posts, self.set = [], [], []
+        self.cookie = dict(page_cookie) if page_cookie else None
+
+    def ops(self):
+        import captcha_solver as cs
+
+        def count(sel):
+            return 1 if (sel == cs.DATADOME_CONTAINER_SELECTOR
+                         and self.html_now == self.challenge_html) else 0
+
+        def frame_src():
+            return (self.captcha_url if self.widget
+                    and self.html_now == self.challenge_html else None)
+
+        def get_cookie(name, url):
+            return dict(self.cookie) if self.cookie else None
+
+        def set_cookie(c):
+            self.set.append(dict(c))
+            self.cookie = {k: c[k] for k in ("name", "value", "domain", "path",
+                                             "secure", "httpOnly", "sameSite",
+                                             "expires")}
+
+        def post_json(path, headers, body):
+            self.posts.append((path, headers, body))
+            return self.validate_answer
+
+        def navigate(url):
+            self.navigations.append(url)
+            if self.after_reload == "content" or len(self.navigations) > 1:
+                self.html_now = FIXTURES["LISTING_US"]
+            elif self.after_reload == "self_clear":
+                self.html_now = FIXTURES["LISTING_US"]
+            else:
+                self.html_now = self.challenge_html
+            return 200
+
+        def frame_post(message):
+            self.frame_posts.append(message)
+            if self.widget_pass == "clears":
+                self.html_now = FIXTURES["LISTING_US"]
+            return True
+
+        return cs.DataDomeOps(
+            html=lambda: self.html_now, count=count, frame_src=frame_src,
+            user_agent=lambda: _DD_UA,
+            page_url=lambda: URLS["BLOCK_429"], get_cookie=get_cookie,
+            set_cookie=set_cookie, post_json=post_json, navigate=navigate,
+            sleep=lambda ms: None,
+            frame_post=frame_post if self.widget_pass else None,
+            watch=(lambda path: (lambda: [200])) if self.widget_pass else None)
+
+
+def _dd_run(page, *, api_key=_DD_KEY, proxy=_DD_PROXY, budget=None,
+            nav_url="https://www.vrbo.com/search?destination=Orlando",
+            stats=None):
+    """One datadome_fallback with a counting stub solver. Returns
+    (returned, purchases, stats, solver call kwargs)."""
+    import captcha_solver as cs
+    calls = []
+
+    def solve(key, **kw):
+        calls.append(dict(kw, key=key))
+        return {"cookie": _DD_SOLVED_COOKIE, "cost": "0.00145", "seconds": 1.0}
+
+    stats = stats or cs.CaptchaStats()
+    budget = budget or page_flow.SolveBudget()
+    got = cs.datadome_fallback(page.ops(), api_key=api_key, proxy_url=proxy,
+                               budget=budget, nav_url=nav_url, stats=stats,
+                               page_num=1, solve=solve, settle_ms=0, poll_ms=1,
+                               widget_wait_ms=0)
+    return got, len(calls), stats, calls
+
+
+def test_datadome_fallback():
+    import captcha_solver as cs
+    ok = True
+    block = FIXTURES["BLOCK_429"]
+
+    group("DataDome: what is worth buying, checked before the purchase")
+    ok &= check("the real handler fixture is a DataDome challenge",
+                cs.is_datadome_challenge(block))
+    ok &= check("a reCAPTCHA pick is not",
+                not cs.is_datadome_challenge(
+                    block.replace("datadome-challenge", "recaptcha-challenge")))
+    ok &= check("a served listing is not",
+                not cs.is_datadome_challenge(FIXTURES["LISTING_US"]))
+    verdicts = {name: cs.captcha_url_verdict(u)[1] for name, u in (
+        ("fe", _DD_CAPTCHA_URL),
+        ("bv", _DD_CAPTCHA_URL.replace("t=fe", "t=bv")),
+        ("interstitial", "https://geo.captcha-delivery.com/interstitial/?t=fe"),
+        ("foreign", "https://evil.example/captcha/?t=fe"),
+        ("http", _DD_CAPTCHA_URL.replace("https:", "http:")),
+        ("none", None))}
+    ok &= check(f"t=fe is bought, t=bv / interstitial / a foreign host / "
+                f"no widget are not ({verdicts})",
+                cs.captcha_url_verdict(_DD_CAPTCHA_URL)[0]
+                and verdicts["bv"] == "exit_banned"
+                and verdicts["interstitial"] == "interstitial"
+                and verdicts["foreign"] == "not_captcha_delivery"
+                and verdicts["http"] == "not_captcha_delivery"
+                and verdicts["none"] == "no_widget")
+
+    group("DataDome: the task carries the browser's own exit and User-Agent")
+    task = cs.datadome_task(URLS["BLOCK_429"], _DD_CAPTCHA_URL, _DD_UA, _DD_PROXY)
+    ok &= check("task type is DataDomeSliderTask, per the current API docs",
+                task["type"] == "DataDomeSliderTask")
+    ok &= check("websiteURL, captchaUrl and userAgent are what the page had",
+                task["websiteURL"] == URLS["BLOCK_429"]
+                and task["captchaUrl"] == _DD_CAPTCHA_URL
+                and task["userAgent"] == _DD_UA)
+    ok &= check("the proxy is the pinned exit, sticky session login and all",
+                task["proxyType"] == "http"
+                and task["proxyAddress"] == "eu.proxy.2captcha.invalid"
+                and task["proxyPort"] == 2334
+                and task["proxyLogin"].endswith("-session-AbC123-sessTime-30")
+                and task["proxyPassword"] == _DD_PASS)
+    ok &= check("socks5 stays socks5; https maps to http",
+                cs.task_proxy_fields("socks5://h.invalid:1080")["proxyType"] == "socks5"
+                and cs.task_proxy_fields("https://h.invalid:8443")["proxyType"] == "http")
+    try:
+        cs.task_proxy_fields("http://u:" + _DD_PASS + "@h.invalid")
+        portless = "accepted"
+    except ValueError as e:
+        portless = str(e)
+    ok &= check("a portless proxy is refused without printing its password",
+                portless != "accepted" and _DD_PASS not in portless)
+
+    group("DataDome: the solver API, stubbed on 127.0.0.1")
+    stub = _StubSolverAPI()
+    try:
+        got = cs.solve_datadome(_DD_KEY, website_url=URLS["BLOCK_429"],
+                                captcha_url=_DD_CAPTCHA_URL, user_agent=_DD_UA,
+                                proxy_url=_DD_PROXY, api_base=stub.base,
+                                poll_interval=0, sleep=lambda s: None)
+        created = [b for p, b in stub.bodies if p == "/createTask"]
+        polled = [b for p, b in stub.bodies if p == "/getTaskResult"]
+        ok &= check("one createTask, polled until ready, cookie returned",
+                    len(created) == 1 and len(polled) == 2
+                    and got["cookie"] == _DD_SOLVED_COOKIE)
+        ok &= check("createTask sends the task built above",
+                    created and created[0]["task"] == task)
+        ok &= check("every poll names the task id createTask returned",
+                    all(b.get("taskId") == 4242 for b in polled))
+    finally:
+        stub.close()
+    for code, want in (("ERROR_CAPTCHA_UNSOLVABLE", cs.CaptchaUnsolvable),
+                       ("ERROR_ZERO_BALANCE", RuntimeError)):
+        stub = _StubSolverAPI(script=[{"errorId": 12, "errorCode": code}])
+        try:
+            cs.solve_datadome(_DD_KEY, website_url="u", captcha_url=_DD_CAPTCHA_URL,
+                              user_agent=_DD_UA, proxy_url=_DD_PROXY,
+                              api_base=stub.base, poll_interval=0,
+                              sleep=lambda s: None)
+            raised = None
+        except Exception as e:  # noqa: BLE001
+            raised = e
+        finally:
+            stub.close()
+        ok &= check(f"{code} raises {want.__name__}, without the proxy "
+                    f"password or the key in the message",
+                    type(raised) is want and _DD_PASS not in str(raised)
+                    and _DD_KEY not in str(raised))
+    stub = _StubSolverAPI(script=[{"errorId": 0, "status": "processing"}])
+    try:
+        cs.solve_datadome(_DD_KEY, website_url="u", captcha_url=_DD_CAPTCHA_URL,
+                          user_agent=_DD_UA, proxy_url=_DD_PROXY,
+                          api_base=stub.base, poll_interval=1, max_wait=3,
+                          sleep=lambda s: None)
+        timed_out = False
+    except TimeoutError:
+        timed_out = True
+    finally:
+        polls = len([1 for p, _ in stub.bodies if p == "/getTaskResult"])
+        stub.close()
+    ok &= check(f"a task that never finishes times out after a bounded "
+                f"number of polls ({polls})", timed_out and polls == 3)
+
+    group("DataDome: the cookie mirrors the page's own attributes")
+    own = {"name": "datadome", "value": "old", "domain": ".vrbo.com",
+           "path": "/", "secure": True, "httpOnly": False, "sameSite": "Lax",
+           "expires": 1893456000}
+    c = cs.cookie_to_install("datadome=NEW; Max-Age=60; Domain=www.vrbo.com; Path=/x",
+                             own, URLS["BLOCK_429"], now=1000)
+    ok &= check("domain, path, Secure and SameSite come from the page's cookie",
+                c["domain"] == ".vrbo.com" and c["path"] == "/"
+                and c["secure"] is True and c["sameSite"] == "Lax"
+                and c["attrs_from"] == "page")
+    ok &= check("the value and lifetime are the solver's",
+                c["value"] == "NEW" and c["expires"] == 1060)
+    c = cs.cookie_to_install("datadome=NEW; Domain=.vrbo.com; Path=/", None,
+                             URLS["BLOCK_429"])
+    ok &= check("with no page cookie, the solver's domain, and Secure + Lax "
+                "even when the solver's string omits them",
+                c["domain"] == ".vrbo.com" and c["secure"] is True
+                and c["sameSite"] == "Lax" and c["attrs_from"] == "solution")
+    c = cs.cookie_to_install("datadome=NEW", None, URLS["BLOCK_429"])
+    ok &= check("with neither, a host cookie on the page's host",
+                c["domain"] == "www.vrbo.com" and c["attrs_from"] == "default")
+
+    group("DataDome: the site's own validate step, read from its config")
+    req = cs.expedia_validate_request(block)
+    ok &= check("path, handshake header and body come from the page config",
+                req is not None and req["path"] == "/botOrNot/validate"
+                and req["headers"]["X-Exchange-Handshake"] == "REDACTED"
+                and req["body"]["exchangeHandshake"] == "REDACTED"
+                and req["body"]["destination"].startswith("L3NlYXJjaD9")
+                and req["body"]["datadome-response"] == {"ddChallengeType": "captcha"})
+    ok &= check("a page without the handshake yields no request",
+                cs.expedia_validate_request(
+                    block.replace("exchangeHandshake", "xHandshake")) is None)
+
+    group("DataDome: the fallback, through a scripted browser")
+    page = _FakeDataDomePage(after_reload="content", page_cookie=own)
+    got, bought, stats, calls = _dd_run(page)
+    stats.settle("content")
+    rec = stats.attempts[-1]
+    ok &= check(f"accepted: one purchase, cookie set, page re-loaded "
+                f"({bought} bought, {len(page.set)} set, {page.navigations})",
+                got and bought == 1 and len(page.set) == 1
+                and page.navigations == ["https://www.vrbo.com/search?destination=Orlando"])
+    ok &= check("the solver got the page's UA, the pinned proxy and the slider URL",
+                calls[0]["user_agent"] == _DD_UA and calls[0]["proxy_url"] == _DD_PROXY
+                and calls[0]["captcha_url"] == _DD_CAPTCHA_URL)
+    ok &= check("the cookie landed with the page's own domain/Secure/SameSite",
+                page.set[0]["domain"] == ".vrbo.com" and page.set[0]["secure"]
+                and page.set[0]["sameSite"] == "Lax"
+                and page.set[0]["value"] == "SOLVED-value")
+    ok &= check("no validate call when the re-load is served",
+                page.posts == [])
+    ok &= check("the record says solved, applied and accepted",
+                rec["outcome"] == "solved" and rec["cookie_applied"]
+                and rec["accepted"] is True and stats.sidecar()["captcha_accepted"] == 1
+                and stats.sidecar()["captcha_solves"] == 1
+                and stats.sidecar()["captcha_kind"] == "datadome")
+
+    page = _FakeDataDomePage(after_reload="challenge", page_cookie=own,
+                             widget_pass="clears")
+    got, bought, stats, _ = _dd_run(page)
+    stats.settle("content")
+    rec = stats.attempts[-1]
+    msg = json.loads(page.frame_posts[0]) if page.frame_posts else {}
+    ok &= check("widget: the answer is reported from the slider's frame as "
+                "the slider does on a pass (eventType passed, the solver's "
+                "cookie string), and nothing of ours follows when it clears",
+                got and bought == 1 and msg == {
+                    "eventType": "passed", "responseType": "captcha",
+                    "cookie": _DD_SOLVED_COOKIE}
+                and page.set == [] and page.navigations == []
+                and page.posts == [] and rec["after_widget"] == "cleared"
+                and rec["widget_validate_statuses"] == [200]
+                and rec["accepted"] is True)
+    page = _FakeDataDomePage(after_reload="content", page_cookie=own,
+                             widget_pass="nothing")
+    got, bought, stats, _ = _dd_run(page)
+    rec = stats.attempts[-1]
+    ok &= check("widget did nothing: the cookie + re-load path runs next, "
+                "still one purchase",
+                got and bought == 1 and len(page.frame_posts) == 1
+                and rec["after_widget"] == "still" and len(page.set) == 1
+                and len(page.navigations) == 1)
+
+    page = _FakeDataDomePage(after_reload="challenge", page_cookie=own)
+    got, bought, stats, _ = _dd_run(page)
+    rec = stats.attempts[-1]
+    ok &= check("still challenged: the site's validate step is called with "
+                "its own handshake, then the page re-loaded once more",
+                bought == 1 and len(page.posts) == 1
+                and page.posts[0][0] == "/botOrNot/validate"
+                and page.posts[0][1]["X-Exchange-Handshake"] == "REDACTED"
+                and rec["validate_success"] is True
+                and len(page.navigations) == 2)
+    page = _FakeDataDomePage(after_reload="challenge", page_cookie=own,
+                             validate_answer=(403, {"success": False}))
+    got, bought, stats, _ = _dd_run(page)
+    stats.settle("challenge")
+    rec = stats.attempts[-1]
+    ok &= check("refused: validate fails, no third load, recorded as "
+                "solved-but-refused",
+                bought == 1 and rec["validate_status"] == 403
+                and rec["validate_success"] is False
+                and len(page.navigations) == 1 and rec["accepted"] is False
+                and stats.sidecar()["captcha_accepted"] == 0
+                and stats.sidecar()["captcha_solved"] == 1)
+
+    for label, page, kw, outcome in (
+            ("the page clears by itself", _FakeDataDomePage(widget=False), {},
+             "self_cleared"),
+            ("t=bv (DataDome bans the exit)",
+             _FakeDataDomePage(captcha_url=_DD_CAPTCHA_URL.replace("t=fe", "t=bv")),
+             {}, "exit_banned"),
+            ("no key", _FakeDataDomePage(), {"api_key": None}, "no_key"),
+            ("no proxy (or --cdp-endpoint)", _FakeDataDomePage(),
+             {"proxy": None}, "no_proxy"),
+            ("a page reached by a button press", _FakeDataDomePage(),
+             {"nav_url": None}, "no_address")):
+        if label == "the page clears by itself":
+            page.html_now = FIXTURES["LISTING_US"]
+        got, bought, stats, _ = _dd_run(page, **kw)
+        ok &= check(f"{label}: nothing bought, outcome {outcome} "
+                    f"(bought {bought}, {stats.attempts[-1].get('outcome')})",
+                    bought == 0 and stats.attempts[-1]["outcome"] == outcome
+                    and stats.solves == 0)
+
+    budget = page_flow.SolveBudget()
+    stats = cs.CaptchaStats()
+    total = 0
+    for _ in range(4):  # retries and rotations of ONE page
+        _, bought, stats, _ = _dd_run(_FakeDataDomePage(after_reload="challenge",
+                                                        validate_answer=(403, None)),
+                                      budget=budget, stats=stats)
+        total += bought
+    ok &= check(f"one page, four attempts: ONE purchase, the budget is never "
+                f"reset (bought {total})", total == page_flow.SOLVES_PER_PAGE
+                and stats.attempts[-1]["outcome"] == "budget_spent")
+
+    group("DataDome: the sidecar")
+    with tempfile.TemporaryDirectory() as tmp:
+        args = type("A", (), {})()
+        st = cs.stats_of(args)
+        st.note({"kind": "datadome", "created": True, "returned": True,
+                 "accepted": None, "outcome": "solved"})
+        st.settle("challenge")
+        extra = cs.captcha_fields(args, {"scroll": {}})
+        ok &= check("captcha_kind / captcha_solves / captcha_accepted are "
+                    "merged beside the caller's extra",
+                    extra["captcha_kind"] == "datadome"
+                    and extra["captcha_solves"] == 1
+                    and extra["captcha_accepted"] == 0 and "scroll" in extra)
+        out = os.path.join(tmp, "dd")
+        code = finish_run([], out, "json", False, blocked=True,
+                          stop_reason="blocked", pages_requested=1,
+                          pages_completed=0, start_url="u", final_url="u",
+                          extra=extra)
+        attempt = out + ".latest_attempt.meta.json"
+        on_disk = json.load(open(attempt)) if os.path.exists(attempt) else {}
+        ok &= check(f"a blocked run with no proxy still records its captcha "
+                    f"attempt on disk (exit {code})",
+                    code == EXIT_BLOCKED
+                    and on_disk.get("captcha_attempts", [{}])[0].get("accepted") is False)
+
+    group("DataDome: each engine hands the solver its OWN exit")
+    for engine in ENGINES:
+        mod = _load_engine_copy(engine)
+        short = engine.split("_")[0]
+        for label, pool_url, remote, want in (
+                ("login proxy", _DD_PROXY, False,
+                 None if engine == "selenium_scraper" else _DD_PROXY),
+                ("proxy without a login", "http://10.0.0.1:3128", False,
+                 "http://10.0.0.1:3128"),
+                ("--cdp-endpoint", _DD_PROXY, True, None)):
+            sess = type("S", (), {})()
+            sess.remote = remote
+            sess.pool = type("P", (), {"current": pool_url})()
+            with _captured_output() as out:
+                got = mod._solver_proxy(sess)
+            ok &= check(f"{short}, {label}: solver proxy is "
+                        f"{'the browser exit' if want else 'None'}",
+                        got == want and _DD_PASS not in out.getvalue())
+    return ok
+
+
+def _run_datadome_page(engine_mod, states, *, pool=None, remote=False,
+                       after_reload="challenge", tmp="."):
+    """One page through the engine's REAL `_fetch_one_page`, the page being
+    the real DataDome handler fixture. The browser is _FakeDataDomePage and
+    the solver a counter; `states` is what the classifier answers.
+
+    Returns (outcome, purchases, the run's CaptchaStats, the solver calls)."""
+    import functools
+    import types
+    import captcha_solver as cs
+    answers = list(states)
+    calls = []
+    page = _FakeDataDomePage(after_reload=after_reload,
+                             validate_answer=(403, None))
+
+    def solve(key, **kw):
+        calls.append(dict(kw, key=key))
+        return {"cookie": _DD_SOLVED_COOKIE, "cost": "0.00145", "seconds": 1.0}
+
+    def fake_classify(html, status=None, url=""):
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+    def content(*a, **k):
+        return page.html_now
+
+    patches = {
+        "_count": lambda *a, **k: 0,
+        "_sleep": lambda ms: None,
+        "_content": content,
+        "_content_when_settled": content,
+        "_current_url": lambda *a, **k: URLS["BLOCK_429"],
+        "_scroll_the_grid": lambda *a, **k: {},
+        "_parse_for_mode": lambda *a, **k: [],
+        "_datadome_ops": lambda *a, **k: page.ops(),
+        "datadome_fallback": functools.partial(
+            cs.datadome_fallback, solve=solve, settle_ms=0, poll_ms=1,
+            widget_wait_ms=0),
+        "solve_recaptcha": lambda *a, **k: calls.append("recaptcha") or "t",
+        "time": types.SimpleNamespace(sleep=lambda s: None),
+    }
+    saved = {k: getattr(engine_mod, k) for k in patches if hasattr(engine_mod, k)}
+    saved_classify = page_flow.classify
+    for k, v in patches.items():
+        if k in saved:
+            setattr(engine_mod, k, v)
+    page_flow.classify = fake_classify
+    args = types.SimpleNamespace(
+        pages=1, retries=1, retry_delay=0, block_retry_delay=None,
+        proxy_block_retries=2, mode="listing", out=os.path.join(tmp, "dd"),
+        dump_html=None, solve_captcha="when-blocked",
+        twocaptcha_key=_DD_KEY, captcha_api="v2", min_score=0.7,
+        headless=False, delay=0, chromium_path="/stub",
+        cdp_endpoint="ws://stub.invalid:1" if remote else None)
+    try:
+        session = _FakeSession(200)
+        session.pool, session.remote = pool, remote
+        outcome = engine_mod._fetch_one_page(
+            session, args, pool, 1,
+            "https://www.vrbo.com/search?destination=Orlando")
+    finally:
+        for k, v in saved.items():
+            setattr(engine_mod, k, v)
+        page_flow.classify = saved_classify
+    return outcome, len(calls), cs.stats_of(args), calls
+
+
+class _FakeDDPool(_FakePool):
+    current = _DD_PROXY
+
+
+def test_datadome_in_the_fetch_loop():
+    group("DataDome through each engine's real fetch loop")
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        for engine in ENGINES:
+            mod = _load_engine_copy(engine)
+            short = engine.split("_")[0]
+            login_ok = engine != "selenium_scraper"
+            pool = _FakeDDPool()
+            # Refused every time, through every block retry and rotation.
+            outcome, bought, stats, calls = _run_datadome_page(
+                mod, ["challenge"], pool=pool, tmp=tmp)
+            want = page_flow.SOLVES_PER_PAGE if login_ok else 0
+            ok &= check(f"{short}: a DataDome page refused through every "
+                        f"retry buys {want} solve(s) (bought {bought})",
+                        bought == want)
+            ok &= check(f"{short}: ...and still ends blocked",
+                        outcome.blocked_by is not None and not outcome.ok)
+            if login_ok:
+                ok &= check(f"{short}: the solver got the pool's CURRENT exit",
+                            calls and calls[0]["proxy_url"] == _DD_PROXY)
+                ok &= check(f"{short}: the refusal is recorded, not accepted",
+                            stats.solved == 1 and stats.accepted == 0
+                            and any(a.get("accepted") is False
+                                    for a in stats.attempts))
+            else:
+                ok &= check("selenium: a login proxy is not its exit, so "
+                            "nothing is bought and the record says why",
+                            stats.attempts and stats.attempts[0]["outcome"] == "no_proxy")
+            # Accepted: the re-load is served.
+            outcome, bought, stats, _ = _run_datadome_page(
+                mod, ["content"], pool=pool, after_reload="content", tmp=tmp)
+            if login_ok:
+                ok &= check(f"{short}: a served re-load is recorded as "
+                            f"accepted ({stats.accepted})",
+                            bought == 1 and stats.accepted == 1)
+            # Over --cdp-endpoint: never.
+            _, bought, stats, _ = _run_datadome_page(
+                mod, ["challenge"], pool=None, remote=True, tmp=tmp)
+            ok &= check(f"{short}: over --cdp-endpoint nothing is bought",
+                        bought == 0)
+    return ok
+
+
+# The handler page's answer to a slider pass, reduced to what the site's tag
+# and challenge bundle do with it: a TRUSTED message from a captcha-delivery
+# origin, `eventType: "passed"`, sets the cookie, then the page POSTs its
+# validate step and, on success, re-loads its destination.
+_STUB_TAG = """<script>
+window.addEventListener('message', function (e) {
+  if (!e.isTrusted || !/captcha-delivery\\.com/.test(e.origin)) return;
+  var n; try { n = JSON.parse(e.data); } catch (x) { return; }
+  if (n.eventType !== 'passed' || !n.cookie) return;
+  document.cookie = n.cookie;
+  fetch('/botOrNot/validate', {method: 'POST', headers: {
+      'Content-Type': 'application/json', 'X-Exchange-Handshake': 'REDACTED'},
+    body: JSON.stringify({'datadome-response': {ddChallengeType: n.responseType},
+                          destination: 'stub', exchangeHandshake: 'REDACTED'})})
+    .then(function (r) { return r.json(); })
+    .then(function (j) { if (j.success) location.replace(location.href); });
+});
+</script>"""
+
+
+class _StubSliderFrame:
+    """geo.captcha-delivery.com's slider document, over HTTPS on 127.0.0.1
+    (a throwaway self-signed certificate; the browser maps the host here)."""
+
+    def __init__(self, tmp):
+        import http.server
+        import ssl
+        import subprocess
+        import threading
+        cert, key = os.path.join(tmp, "c.pem"), os.path.join(tmp, "k.pem")
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048",
+                        "-nodes", "-keyout", key, "-out", cert, "-days", "1",
+                        "-subj", "/CN=geo.captcha-delivery.com"],
+                       check=True, capture_output=True)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = b"<html><body>slider</body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.port = self.server.server_address[1]
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class _StubDataDomeSite:
+    """vrbo.com's challenge and its pass, on 127.0.0.1.
+
+    /search answers 429 with the real handler fixture (a slider iframe
+    mounted, and _STUB_TAG) and sets the page's own `datadome` cookie, until
+    a request carries the cookie value the stub solver hands out — then it
+    serves the real listing fixture. `accept=False` never serves it and
+    answers every validate with `success: false`."""
+
+    def __init__(self, accept=True, frame_port=None):
+        import http.server
+        import threading
+        site = self
+        self.accept, self.hits, self.validates = accept, [], []
+        src = (_DD_CAPTCHA_URL if frame_port is None else _DD_CAPTCHA_URL.replace(
+            "geo.captcha-delivery.com/", "geo.captcha-delivery.com:%d/" % frame_port))
+        challenge = FIXTURES["BLOCK_429"].replace(
+            '<div id="DATADOME-CHALLENGE"></div>',
+            '<div id="DATADOME-CHALLENGE"><iframe src="' + src
+            + '"></iframe></div>' + _STUB_TAG)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def _send(self, status, body, ctype="text/html", cookie=None):
+                data = body.encode()
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                if cookie:
+                    self.send_header("Set-Cookie", cookie)
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                cookies = self.headers.get("Cookie") or ""
+                site.hits.append((self.path, cookies,
+                                  self.headers.get("User-Agent")))
+                if not self.path.startswith("/search"):
+                    return self._send(404, "")
+                if site.accept and "datadome=SOLVED-value" in cookies:
+                    return self._send(200, FIXTURES["LISTING_US"])
+                # The site's own cookie only for a visitor without the
+                # solved one: refused here means "the handler wants its own
+                # validate step", not "DataDome replaced the cookie".
+                own = (None if "datadome=SOLVED-value" in cookies else
+                       "datadome=page-own; Path=/; Max-Age=3600; SameSite=Lax")
+                return self._send(429, challenge, cookie=own)
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                cookies = self.headers.get("Cookie") or ""
+                site.validates.append((self.path, dict(self.headers.items()),
+                                       json.loads(body or b"{}"), cookies))
+                ok = site.accept and "datadome=SOLVED-value" in cookies
+                self._send(200, json.dumps({"success": ok}),
+                           ctype="application/json")
+
+            def log_message(self, *a):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = ("http://127.0.0.1:%d/search?destination=Orlando"
+                    % self.server.server_address[1])
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def test_datadome_in_a_real_browser(skips):
+    """Opt-in (DATADOME_BROWSER=1): each installed driver meets the stub
+    challenge, and the engine's own DataDomeOps — the iframe read, the UA,
+    the pass reported from inside the slider's frame, cookie read/write and
+    the in-page validate fetch — run against a real Chromium. The solver is
+    the 127.0.0.1 stub API, the slider frame a local HTTPS stub. Not run in
+    CI."""
+    group("DataDome in a real browser (opt-in)")
+    if os.environ.get("DATADOME_BROWSER") != "1":
+        print("  not run — set DATADOME_BROWSER=1 with a Chromium installed")
+        return True
+    import functools
+    import types
+    import captcha_solver as cs
+    ok = True
+    chromium = os.environ.get("PROXY_METER_CHROMIUM", "/usr/bin/chromium")
+    tmp = tempfile.mkdtemp()
+    frame = _StubSliderFrame(tmp)
+    # The slider's host resolves to the local HTTPS stub: nothing leaves
+    # this machine.
+    flags = ["--host-resolver-rules=MAP geo.captcha-delivery.com 127.0.0.1",
+             "--ignore-certificate-errors"]
+    for driver in ("playwright", "pyppeteer", "selenium"):
+        try:
+            __import__(driver)
+        except ImportError:
+            continue
+        engine = {"playwright": "playwright_scraper",
+                  "pyppeteer": "puppeteer_scraper",
+                  "selenium": "selenium_scraper"}[driver]
+        mod = _load_engine_copy(engine)
+        # (accept, use the widget): accepted through the widget; refused
+        # everywhere (widget, then cookie + re-load, then validate); and the
+        # cookie + re-load path on its own.
+        for accept, widget in ((True, True), (False, True), (True, False)):
+            site = _StubDataDomeSite(accept=accept, frame_port=frame.port)
+            api = _StubSolverAPI()
+            args = types.SimpleNamespace(out="dd")
+            stats = cs.CaptchaStats()
+            solve = functools.partial(cs.solve_datadome, api_base=api.base,
+                                      poll_interval=0.05)
+            sess = types.SimpleNamespace(remote=False, pool=None)
+            closer = None
+            label = "%s, %s%s" % (driver, "accepting" if accept else "refusing",
+                                  "" if widget else ", no widget path")
+            try:
+                if driver == "playwright":
+                    from playwright.sync_api import sync_playwright
+                    pw = sync_playwright().start()
+                    b = pw.chromium.launch(headless=True, args=flags)
+                    sess.context = b.new_context(ignore_https_errors=True)
+                    sess.page = sess.context.new_page()
+                    sess.page.goto(site.url)
+
+                    def closer(b=b, pw=pw):
+                        b.close()
+                        pw.stop()
+                elif driver == "pyppeteer":
+                    from pyppeteer import launch
+                    sess.bridge = mod._AsyncBridge()
+                    b = sess.bridge.run(launch(
+                        headless=True, executablePath=chromium,
+                        args=["--no-sandbox"] + flags, ignoreHTTPSErrors=True,
+                        handleSIGINT=False, handleSIGTERM=False,
+                        handleSIGHUP=False))
+                    sess.page = sess.bridge.run(b.newPage())
+                    sess.bridge.run(sess.page.goto(site.url))
+
+                    def closer(b=b, br=sess.bridge):
+                        br.run(b.close())
+                else:
+                    from selenium import webdriver
+                    from selenium.webdriver.chrome.options import Options
+                    from selenium.webdriver.chrome.service import Service
+                    o = Options()
+                    o.add_argument("--headless=new")
+                    o.add_argument("--no-sandbox")
+                    for flag in flags:
+                        o.add_argument(flag)
+                    o.binary_location = chromium
+                    sess.driver = webdriver.Chrome(options=o, service=Service(
+                        os.environ.get("PROXY_METER_CHROMEDRIVER",
+                                       "/usr/bin/chromedriver")))
+                    sess.driver.set_script_timeout(30)
+                    sess.driver.get(site.url)
+                    closer = sess.driver.quit
+                ops = mod._datadome_ops(sess, args)
+                if not widget:
+                    ops.frame_post = None
+                html = ops.html() or ""
+                got = cs.datadome_fallback(
+                    ops, api_key=_DD_KEY, proxy_url=_DD_PROXY,
+                    budget=page_flow.SolveBudget(), nav_url=site.url,
+                    stats=stats, page_num=1, solve=solve, settle_ms=3000,
+                    poll_ms=200, widget_wait_ms=4000)
+                after = ops.html() or ""
+                stats.settle(detect_page_state(after, None, site.url))
+                rec = stats.attempts[-1] if stats.attempts else {}
+                task = next((b["task"] for p, b in api.bodies
+                             if p == "/createTask"), {})
+                site_ua = site.hits[0][2] if site.hits else None
+                cookie = ops.get_cookie("datadome", site.url) or {}
+            except Exception as e:  # noqa: BLE001
+                ok &= check(f"{label}: ran without error ({type(e).__name__}: "
+                            f"{str(e)[:160]})", False)
+                continue
+            finally:
+                if closer:
+                    try:
+                        closer()
+                    except Exception:  # noqa: BLE001
+                        pass
+                site.close()
+                api.close()
+            ok &= check(f"{label}: the real fixture is detected",
+                        cs.is_datadome_challenge(html))
+            ok &= check(f"{label}: the slider URL is read off the live iframe",
+                        "captcha-delivery.com" in (task.get("captchaUrl") or ""))
+            ok &= check(f"{label}: the solver gets the UA the site saw",
+                        bool(site_ua) and task.get("userAgent") == site_ua)
+            ok &= check(f"{label}: one createTask", len(
+                [1 for p, _ in api.bodies if p == "/createTask"]) == 1)
+            # pyppeteer has no out-of-process iframe support, so it cannot
+            # reach the slider's cross-origin frame and goes straight to the
+            # cookie + re-load path. The other two drivers can.
+            reach = widget and driver != "pyppeteer"
+            if widget and not reach:
+                ok &= check(f"{label}: cannot post from the frame, says so, "
+                            f"and falls through to the cookie + re-load",
+                            rec.get("widget_posted") is False
+                            and rec.get("cookie_applied") is True)
+            if reach:
+                ok &= check(f"{label}: the pass is reported from inside the "
+                            f"slider's frame and the page's own handler "
+                            f"validates with the solved cookie "
+                            f"({rec.get('widget_posted')}, {len(site.validates)})",
+                            rec.get("widget_posted") is True and site.validates
+                            and "datadome=SOLVED-value" in site.validates[0][3]
+                            and site.validates[0][2].get("datadome-response")
+                            == {"ddChallengeType": "captcha"})
+            if accept and reach:
+                ok &= check(f"{label}: the page left the challenge by itself, "
+                            f"no re-load of ours, accepted",
+                            got and rec.get("after_widget") == "cleared"
+                            and "reload_status" not in rec
+                            and rec.get("accepted") is True)
+            elif accept:
+                ok &= check(f"{label}: cookie set with the page's own "
+                            f"SameSite/path ({cookie.get('sameSite')}, "
+                            f"{cookie.get('path')}), the re-load carries it "
+                            f"and is served, accepted",
+                            got and rec.get("cookie_applied") is True
+                            and cookie.get("sameSite") == "Lax"
+                            and cookie.get("path") == "/"
+                            and rec.get("accepted") is True
+                            and "datadome=SOLVED-value" in site.hits[-1][1])
+            else:
+                ours = [v for v in site.validates if "x-exchange-handshake"
+                        in {k.lower() for k in v[1]}]
+                ok &= check(f"{label}: after the widget, the cookie + re-load "
+                            f"and our own validate POST (handshake header, "
+                            f"solved cookie) all ran, recorded solved but "
+                            f"refused ({ {k: rec.get(k) for k in ('after_widget', 'cookie_applied', 'validate_success', 'accepted')} }, "
+                            f"{len(ours)} validate(s))",
+                            rec.get("after_widget") == ("still" if reach else None)
+                            and rec.get("cookie_applied") is True
+                            and len(ours) >= (2 if reach else 1)
+                            and "datadome=SOLVED-value" in ours[-1][3]
+                            and rec.get("validate_success") is False
+                            and rec.get("returned") is True
+                            and rec.get("accepted") is False)
+    frame.close()
+    return ok
+
+
 def main() -> int:
     ok = True
     skips = []
@@ -4081,6 +4951,8 @@ def main() -> int:
     ok &= test_x_debug_header_is_redacted()
     ok &= test_scraper_api_waitfor_is_an_object()
     ok &= test_engine_fetch_loop()
+    ok &= test_datadome_fallback()
+    ok &= test_datadome_in_the_fetch_loop()
     ok &= test_numeric_flags_are_validated()
     ok &= test_output_is_atomic_and_formula_safe()
     ok &= test_no_private_citations()
@@ -4088,6 +4960,7 @@ def main() -> int:
     ok &= test_proxy_meter_units(skips)
     ok &= test_proxy_meter_in_the_engines(skips)
     ok &= test_proxy_meter_in_a_real_browser(skips)
+    ok &= test_datadome_in_a_real_browser(skips)
     ok &= test_canary_reports_proxy_traffic()
 
     passed = _total_checks - len(_failures)

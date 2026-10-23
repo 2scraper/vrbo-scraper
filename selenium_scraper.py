@@ -48,7 +48,11 @@ from selenium.webdriver.common.by import By
 
 from captcha_solver import (detect_recaptcha_v3, detect_recaptcha_in_page,
                             reconcile_detections, solve_recaptcha,
-                            INJECT_TOKEN_JS)
+                            INJECT_TOKEN_JS,
+                            DataDomeOps, DATADOME_FRAME_SELECTOR,
+                            captcha_fields, datadome_fallback,
+                            is_datadome_challenge,
+                            stats_of as captcha_stats)
 from product_parser import (parse_products, parse_property_page, SELECTORS,
                             NEXT_PAGE_SELECTOR, PAGE_CAP,
                             detect_bot_challenge, listing_kind, page_currency,
@@ -433,19 +437,139 @@ def _parse_for_mode(html: str, url: str, args, page_num: int = 1) -> List:
                           page_currency_code=page_currency(html))
 
 
-def handle_captcha_if_present(session, args, *, budget) -> bool:
+def _solver_proxy(session) -> Optional[str]:
+    """The proxy this browser exits through, or None.
+
+    Selenium strips a proxy login (see _Session.open), so a proxy WITH one is
+    not an exit this browser actually uses: handing it to the solver would
+    buy a cookie for an address the browser never reaches. Only a proxy
+    without a login (an allow-listed exit) qualifies, and never over
+    --cdp-endpoint.
+    """
+    if session.remote or not session.pool:
+        return None
+    _, credentials = split_credentials(session.pool.current)
+    if credentials:
+        logger.warning("The DataDome fallback needs the browser's own exit, "
+                       "and Selenium cannot send this proxy's login, so it "
+                       "is not that exit. Use playwright_scraper.py or "
+                       "puppeteer_scraper.py for a login proxy.")
+        return None
+    return session.pool.current
+
+
+def _datadome_ops(session, args) -> DataDomeOps:
+    """captcha_solver.DataDomeOps bound to this Selenium session."""
+    def driver():
+        return session.driver
+
+    def frame_src():
+        try:
+            found = driver().find_elements(By.CSS_SELECTOR,
+                                           DATADOME_FRAME_SELECTOR)
+            return found[0].get_attribute("src") if found else None
+        except WebDriverException:
+            return None
+
+    def user_agent():
+        try:
+            return driver().execute_script("return navigator.userAgent;")
+        except WebDriverException:
+            return ""
+
+    def get_cookie(name, url):
+        # CDP rather than driver.get_cookies(): it sees every attribute,
+        # SameSite included, for cookies on the parent domain too.
+        try:
+            got = driver().execute_cdp_cmd("Network.getCookies",
+                                           {"urls": [url]})
+            for c in (got or {}).get("cookies", []):
+                if c.get("name") == name:
+                    return dict(c)
+        except WebDriverException:
+            pass
+        return None
+
+    def set_cookie(cookie):
+        driver().execute_cdp_cmd("Network.setCookie", {
+            "name": cookie["name"], "value": cookie["value"],
+            "domain": cookie["domain"], "path": cookie["path"],
+            "expires": cookie["expires"], "httpOnly": cookie["httpOnly"],
+            "secure": cookie["secure"], "sameSite": cookie["sameSite"]})
+
+    def post_json(path, headers, body):
+        result = driver().execute_async_script(
+            """const [path, headers, body, done] = arguments;
+            fetch(path, {method: 'POST', headers, body: JSON.stringify(body),
+                         credentials: 'same-origin'})
+              .then(async r => {
+                let j = null;
+                try {
+                  if ((r.headers.get('content-type') || '').includes('json'))
+                    j = await r.json();
+                } catch (e) {}
+                done([r.status, j]);
+              })
+              .catch(() => done([null, null]));""", path, headers, body)
+        return (result[0], result[1]) if result else (None, None)
+
+    def navigate(url):
+        proxy_meter.check(args)
+        try:
+            driver().get(url)
+        except WebDriverException as e:
+            logger.warning("Re-loading after the solve failed: %s",
+                           _mask_credentials(str(e))[:200])
+        proxy_meter.drain_selenium(driver())
+        return None  # WebDriver has no response status
+
+    def frame_post(message):
+        found = driver().find_elements(By.CSS_SELECTOR, DATADOME_FRAME_SELECTOR)
+        if not found:
+            return False
+        try:
+            driver().switch_to.frame(found[0])
+            driver().execute_script(
+                "window.parent.postMessage(arguments[0], '*'); return true;",
+                message)
+            return True
+        finally:
+            driver().switch_to.default_content()
+
+    # No `watch`: WebDriver has no response events (the performance log is
+    # the proxy meter's).
+    return DataDomeOps(html=lambda: _content(session),
+                       count=lambda sel: _count(session, sel),
+                       frame_src=frame_src, user_agent=user_agent,
+                       page_url=lambda: _current_url(session),
+                       get_cookie=get_cookie, set_cookie=set_cookie,
+                       post_json=post_json, navigate=navigate, sleep=_sleep,
+                       frame_post=frame_post)
+
+
+def handle_captcha_if_present(session, args, *, budget,
+                              nav_url: Optional[str] = None,
+                              page_num: Optional[int] = None,
+                              allow_datadome: bool = True) -> bool:
     """Detect and solve a challenge. True if something was solved.
 
-    Same contract and same reconciliation as the Playwright engine, including
-    what it CANNOT reach: Expedia's Bot-or-Not handler picks its vendor per
-    request and the measured pick here was DataDome, which this repo has no
-    solver for. Those are classified `blocked`, so no solve is attempted and
-    nothing is charged.
+    Same contract and same reconciliation as the Playwright engine. A
+    DataDome pick goes to captcha_solver.datadome_fallback, which this
+    engine can feed only through a proxy without a login (see
+    _solver_proxy).
     """
     driver = session.driver
     html = _content(session)
     if html is None:
         return False
+
+    if is_datadome_challenge(html):
+        if not allow_datadome:
+            return False
+        return datadome_fallback(
+            _datadome_ops(session, args), api_key=args.twocaptcha_key,
+            proxy_url=_solver_proxy(session), budget=budget, nav_url=nav_url,
+            stats=captcha_stats(args), page_num=page_num)
 
     already_rendered = _count(session, _ready_selector(args))
     when_blocked = getattr(args, "solve_captcha", "when-blocked") == "when-blocked"
@@ -478,6 +602,8 @@ def handle_captcha_if_present(session, args, *, budget) -> bool:
         logger.warning("This page's solve allowance (%d) is used up — not "
                        "buying another.", budget.limit)
         return False
+    record = {"page": page_num, "kind": challenge.kind, "created": True,
+              "returned": False, "accepted": None}
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
                                 api_version=args.captcha_api,
@@ -485,7 +611,11 @@ def handle_captcha_if_present(session, args, *, budget) -> bool:
     except Exception as e:  # noqa: BLE001 — a solver failure is not a crash
         logger.error("Solving the challenge failed (%s) — continuing with "
                      "whatever the page holds.", e)
+        record["outcome"] = "solve_failed"
+        captcha_stats(args).note(record)
         return False
+    record.update(returned=True, outcome="solved")
+    captcha_stats(args).note(record)
 
     driver.execute_script(f"return ({INJECT_TOKEN_JS})(arguments[0]);", token)
     logger.info("Token injected. Reloading page to continue.")
@@ -620,12 +750,16 @@ def _fetch_one_page(session, args, pool, page_num: int,
         if load_failed:
             break
 
-        if handle_captcha_if_present(session, args, budget=budget):
+        solved = handle_captcha_if_present(session, args, budget=budget,
+                                           nav_url=url, page_num=page_num)
+        if solved:
             _sleep(1000)
             status = None  # the reload replaced the response it described
 
         html = _content(session) or ""
         state = _classify(session, html, status)
+        if solved:
+            captcha_stats(args).settle(state)
 
         if page_flow.is_unpainted(state, html):
             wait_timeout = page_flow.content_timeout_ms(args.mode)
@@ -640,11 +774,14 @@ def _fetch_one_page(session, args, pool, page_num: int,
             state = _classify(session, html, status)
 
         if page_flow.should_solve(state) and budget.remaining():
-            if handle_captcha_if_present(session, args, budget=budget):
+            if handle_captcha_if_present(session, args, budget=budget,
+                                         nav_url=url, page_num=page_num,
+                                         allow_datadome=False):
                 _sleep(1000)
                 status = None
                 html = _content(session) or html
                 state = _classify(session, html, status)
+                captcha_stats(args).settle(state)
                 if state == "content":
                     logger.info("The solve was accepted — page %d is content "
                                 "now.", page_num)
@@ -956,6 +1093,7 @@ def scrape(args) -> int:
                  "throttle_retries": throttle_retries}
 
     # Selenium strips a proxy login (see _Session), so no session is sent.
+    extra = captcha_fields(args, extra)
     extra = session_fields(pool, extra, login_sent=False)
     extra = proxy_meter.finish(args, extra)
     return finish_run(all_rows, args.out, args.format, args.allow_empty,
@@ -1061,8 +1199,10 @@ def parse_args():
                    default="when-blocked",
                    help="when-blocked (default). Expedia's handler picks its "
                         "vendor per request and the measured pick was "
-                        "DataDome, which this repo has no solver for — those "
-                        "are reported as blocked and nothing is charged.")
+                        "DataDome. This engine solves it only through a "
+                        "proxy WITHOUT a login (Selenium cannot send one, so "
+                        "a login proxy is not the exit the browser uses); "
+                        "at most once per page.")
     p.add_argument("--min-score", type=float, default=0.7,
                    help="reCAPTCHA v3 minimum score (0.3, 0.7 or 0.9).")
     proxy_check.add_media_flags(p)

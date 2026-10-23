@@ -232,8 +232,9 @@ def build_block(filename, url):
     config = full[max(0, marker - 200): marker + 2600] if marker > 0 else ""
     trimmed = head + "<body>" + body + config + "</body></html>"
     state = P.detect_page_state(trimmed, 429, url)
-    if state != "blocked":
-        raise SystemExit(f"BLOCK_429: classifies as {state!r}, not blocked")
+    # `challenge`, not `blocked`: DataDome is a pick this repo can solve.
+    if state != "challenge":
+        raise SystemExit(f"BLOCK_429: classifies as {state!r}, not challenge")
     if P.challenge_vendor(trimmed) is None:
         raise SystemExit("BLOCK_429: lost whichChallenge — the vendor is the point")
     leftovers = re.findall(r"\b[0-9a-fA-F]{24,}\b", trimmed)

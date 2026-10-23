@@ -133,9 +133,9 @@ silently regress:
   card. Do not merge them.
 - **`rating` is out of ten**, which is why `rating_scale` is its own column.
 - **The refusal names its vendor as data.** Expedia's "Bot or Not?" handler
-  (HTTP 429) states `whichChallenge`; only a reCAPTCHA pick is offered to
-  the solver, and every other pick is reported as blocked with nothing
-  charged. Block detection is also positive: a served page is recognised by
+  (HTTP 429) states `whichChallenge`. Only a DataDome or reCAPTCHA pick is
+  offered to a solver (DataDome only through the browser's own proxy exit);
+  every other pick is reported as blocked with nothing charged. Block detection is also positive: a served page is recognised by
   the site's own asset hosts (`travel-assets.com`, `media.vrbo.com`),
   because Chromium's network-error page carries the site's hostname in its
   title.
