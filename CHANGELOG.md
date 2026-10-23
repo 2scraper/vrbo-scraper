@@ -24,6 +24,15 @@ that is a fix, and the release notes lead with it.
 > - when the page clears by itself within 15 s.
 >
 > To keep the old behaviour, leave `TWOCAPTCHA_KEY` unset.
+>
+> Measured on 2026-10-23 over seven canary walks:
+> - 6 solves were bought, and 2 were accepted, both through the widget
+>   step. Those two runs went on to 3 pages and 150 rows.
+> - The cookie-and-re-load path was accepted 0 times out of 4.
+> - No-solve control: the first-page job met DataDome in all seven runs and
+>   never cleared by itself.
+>
+> See the README "Live result".
 
 > **Behaviour change.** A page turn that gets no grid back (the site's
 > `/graphql` answered HTTP 429, with no `Retry-After`) is now retried

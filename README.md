@@ -578,7 +578,36 @@ free control: it is the same page clearing with nothing bought.
 
 #### Live result
 
-Not measured yet through this repo. The canary's walk (`pagination`) is the live check.
+Measured 2026-10-23 through the canary's walk: seven dispatches, a
+residential `VRBO_PROXY` exit pinned to one sticky session per run,
+headful real Chrome on a GitHub runner, and `--block-media`.
+
+| run | DataDome on page 1 | solved in | widget step | our cookie + re-load + validate | result |
+|---|---|---|---|---|---|
+| 1 | yes | 26.8 s | not in that build | 429, validate 403 | blocked, 3.4 MB |
+| 2 | no (page 1 served, grid never painted) | — | — | — | exit 5, 7.0 MB |
+| 3 | yes | 37.1 s | page's own validate **200**, page left | not needed | **3 pages, 150 rows, complete**, 10.0 MB |
+| 4 | yes | 31.5 s | page's own validate 403 | 429, validate 403 | blocked, 3.4 MB |
+| 5 | yes | 26.8 s | page's own validate 403 | 429, validate 403 | blocked, 3.7 MB |
+| 6 | yes | 26.6 s | page's own validate 403 | 429, validate 403 | blocked, 4.2 MB |
+| 7 | yes | 42.5 s | page's own validate **200**, page left | not needed | **3 pages, 150 rows, complete**, 9.3 MB |
+
+The totals:
+- **6 solves bought**, all returned, at $0.00145 each.
+- **2 accepted**, both through the widget step.
+- **The cookie + re-load path and our own validate call: 0 of 4.** After
+  each re-load the site replaced the cookie and mounted a new slider.
+- **The no-solve control:** the `first-page` job, from the runner's own
+  address with no key and no proxy, met DataDome on all seven runs. None
+  cleared by itself in either of its two tries per run.
+
+So the fallback does work, but not reliably. Two of five answers reported
+through the widget were accepted. Both times the page's own validate call
+answered 200 just after the answer was posted, and the walk went on to
+complete. None of the no-solve fetches cleared. Seven runs are too few for
+a rate: read "about 2 in 5" as an observation, not a promise. Answers the
+handler refused were refused at its validate step (HTTP 403). Nothing in
+the records shows why some are accepted and others not.
 
 #### What was measured before this path existed (2026-09-14)
 
