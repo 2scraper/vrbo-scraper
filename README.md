@@ -1,4 +1,4 @@
-# vrbo-scraper
+# Vrbo Scraper — Property Listings, Prices and Ratings in Python
 
 [![release](https://img.shields.io/github/v/release/2scraper/vrbo-scraper?sort=semver)](https://github.com/2scraper/vrbo-scraper/releases)
 [![tests](https://github.com/2scraper/vrbo-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/2scraper/vrbo-scraper/actions/workflows/tests.yml)
@@ -7,6 +7,8 @@
 [![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 [![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20pyppeteer-lightgrey)](#engines)
 [![runs without an account](https://img.shields.io/badge/runs%20without-an%20account-brightgreen)](#do-you-need-any-of-the-paid-products)
+
+**Vrbo scraper** — an open-source (MIT) Python tool that reads search grids and property pages on Vrbo's five storefronts (vrbo.com, fewo-direkt.de, abritel.fr, bookabach.co.nz, stayz.com.au) and writes prices, ratings, bedrooms, amenities and stay dates to JSON or CSV. No paid product is needed: an ordinary local Chrome on a residential connection reads the site, and on 2026-09-14 a direct connection was served 12 of 12 requests, though the README warns the same address can be challenged minutes apart. Use it for a rental-listing dataset or, with stay dates pinned in the search URL, for price monitoring and comparing two runs with `diff_runs.py`.
 
 Scrapes **Vrbo** property listings — a search grid, or one property's own
 page — into JSON or CSV with a stable column schema, a run-metadata sidecar,
@@ -722,6 +724,23 @@ real captures by `make_fixtures.py`, which proves each one parses
 `TROUBLESHOOTING.md` covers what to do when a column comes back empty.
 
 ---
+
+## Guides
+
+- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+
+## Related scrapers
+
+Same CLI conventions, same output contract (one row per item, JSON or CSV, a `.meta.json` sidecar and shared exit codes):
+
+- [Webmotors scraper](https://github.com/2scraper/webmotors-scraper) — Car and motorcycle listings from Brazil's webmotors.com.br…
+- [Zimmo scraper](https://github.com/2scraper/zimmo-scraper) — Zimmo.be sale and rent listings
+- [Autotrader scraper](https://github.com/2scraper/autotrader-scraper) — US car listings with VIN, fee-inclusive price, KBB fair…
+- [Avito scraper](https://github.com/2scraper/avito-scraper) — Category and search listings, item pages and seller profiles…
+- [Craigslist scraper](https://github.com/2scraper/craigslist-scraper) — Result lists and adverts from all 714 areas
+- [dubizzle scraper](https://github.com/2scraper/dubizzle-scraper) — UAE classifieds — motors, property, electronics, jobs…
+
+All scrapers: [github.com/2scraper](https://github.com/2scraper) · Need another site? [Open a request](https://github.com/2scraper/.github/issues/new?title=%5BScraper%20request%5D%20)
 
 ## Licence and scope
 
