@@ -263,14 +263,24 @@ def paginates_by_url(url: str) -> bool:
     return PAGINATES_BY_URL
 
 
+# The two card layouts the grid has been served in. `lodging-card-responsive`
+# is the one every fixture before 2026-11-05 carries. The second wrapper is a
+# newer layout, first captured on 2026-11-05 from a GitHub runner (headful
+# real Chrome, no proxy, a dated Orlando search): the same price block, badge
+# and overlay link, but no visible title, a headline of the form "<type> in
+# <place>" and a separate summary line. Neither capture holds both wrappers.
+CARD_CLASSIC = '[data-stid="lodging-card-responsive"]'
+CARD_MOJO = '[data-stid="mojo-web-adapter-mojo_product_card_container-container"]'
+
 SELECTORS: Dict[str, str] = {
     # A search result card. The readiness anchor and the row unit both.
-    "item_card": '[data-stid="lodging-card-responsive"]',
+    "item_card": f"{CARD_CLASSIC}, {CARD_MOJO}",
     # The card's link to the property. `open-product-information` is the
     # whole-card overlay anchor; it is the one link a card has to its own
     # property, which matters because the tile-scoping failure (a price read from a neighbouring tile)
     # starts with a card that links to itself twice.
-    "item_link": '[data-stid="lodging-card-responsive"] a[data-stid="open-product-information"]',
+    "item_link": (f'{CARD_CLASSIC} a[data-stid="open-product-information"], '
+                  f'{CARD_MOJO} a[data-stid="open-product-information"]'),
     # The results list is an INNER scroller. The page body does not scroll at
     # all: `document.body.scrollHeight === window.innerHeight === 900` on
     # every capture, so the usual "scroll to document.body.scrollHeight" moves
@@ -282,13 +292,20 @@ SELECTORS: Dict[str, str] = {
     # 2026-10-20/21: 6 of them under 13 or 19 cards), absent on every full
     # page. It is filled only when it comes INTO view: the scroll-to-bottom
     # loop leaves it in view the whole time, so the grid waits forever.
-    "grid_placeholder": '[data-stid="search-listing-placeholder"]',
+    # The newer card layout names its placeholder differently (6 of them
+    # under 4 cards on the 2026-11-05 capture, with the old name absent).
+    "grid_placeholder": ('[data-stid="search-listing-placeholder"], '
+                         '[data-stid="search-listing-new-card-layout-placeholder"]'),
     # Two spellings of one element, and both are real (see the module
     # docstring). Kept as one comma selector so every read gets both.
     "card_price": '[data-stid="product-price-summary"], [data-test-id="price-summary"]',
     "card_title": "h3.uitk-heading-5",
     "card_badge": "span.uitk-badge-base-text",
     "card_summary": ".truncate-lines-3, .truncate-lines-2",
+    # Newer layout: the "<type> in <place>" headline, and its two one-line
+    # rows below it (the summary, then the location note).
+    "card_headline": '[data-testid="mojo-text"]',
+    "card_lines": "div.truncate",
     "card_location_note": '[data-stid="featured-messages-container"]',
     "card_amenities": '[data-stid="amenity-highlights-with-icons"]',
     "card_image": "img.uitk-image-media",
@@ -767,6 +784,7 @@ _DASH = "-‐‑‒–—―"
 _DATE_RANGE_RE = re.compile(r"\d.*[" + _DASH + r"].*\d")
 _RATING_SCALE_RE = re.compile(r"^\s*([\d.,]+)\s*\D{1,20}?\s*(\d{1,3})\s*$")
 _PARENTHESISED_RE = re.compile(r"^\(.*\d.*\)$", re.S)
+_TRAILING_PARENTHESISED_RE = re.compile(r"\([^()]*\d[^()]*\)\s*$")
 
 
 def _text(node) -> str:
@@ -824,6 +842,15 @@ def _review_count(card) -> Optional[int]:
             found = int_in(text)
             if found is not None:
                 return found
+    # The newer card layout prefixes the parenthesis with the rating's word:
+    # "wonderful, (53 reviews)". Only the parenthesised part is read, so the
+    # same locale-independent rule applies to it.
+    for text in _a11y_texts(card):
+        match = _TRAILING_PARENTHESISED_RE.search(text)
+        if match:
+            found = int_in(match.group(0))
+            if found is not None:
+                return found
     return None
 
 
@@ -846,7 +873,11 @@ def _price_block(card) -> Tuple[Optional[float], Optional[str], List[str]]:
     lines = [_text(n) for n in block.select("div, span")]
     lines = [line for line in lines if line]
 
-    rendered = block.select_one(".uitk-type-500")
+    # `.uitk-type-500` in the classic layout; in the newer one the amount
+    # the visitor sees is the aria-hidden `.uitk-type-400` node (the struck
+    # "previous price" beside it is an <s> at type-300, so it cannot match).
+    rendered = block.select_one(".uitk-type-500") \
+        or block.select_one('div.uitk-type-400[aria-hidden="true"]')
     amount = price_in(_text(rendered)) if rendered is not None else None
     source = "card" if amount is not None else None
     if amount is None:
@@ -961,6 +992,77 @@ def _image_url(card) -> Optional[str]:
     return None
 
 
+def _is_mojo(card) -> bool:
+    return card.get("data-stid") == CARD_MOJO.split('"')[1]
+
+
+def _mojo_summary(card) -> Tuple[Optional[str], Optional[str], Optional[int],
+                                 Optional[int], Optional[str]]:
+    """(summary, property type, bedrooms, beds, location note), newer layout.
+
+    The headline reads "Apartment in Orlando" and is kept verbatim as the
+    type: cutting "in Orlando" off would need the word for "in" in every
+    storefront's language. The summary row reads "2 bedrooms · 4 beds · Pay
+    $0 today · ..." with no type in front, so bedrooms and beds are its FIRST
+    and second segments here, not the second and third as in the classic
+    layout. A segment counts only when it holds exactly one integer.
+    """
+    ptype = _text(card.select_one(SELECTORS["card_headline"])) or None
+    rows = [_text(n) for n in card.select(SELECTORS["card_lines"])]
+    rows = [r for r in rows if r]
+    summary = rows[0] if rows else None
+    location = rows[1] if len(rows) > 1 else None
+
+    def _single_int(text: str) -> Optional[int]:
+        found = numbers_in(text)
+        return int(round(found[0])) if len(found) == 1 else None
+
+    parts = [p.strip() for p in summary.split("·")] if summary else []
+    bedrooms = _single_int(parts[0]) if parts else None
+    beds = _single_int(parts[1]) if len(parts) > 1 else None
+    return summary, ptype, bedrooms, beds, location
+
+
+def _common_tail(a: str, b: str) -> str:
+    """The longest whole-word tail two labels share."""
+    a, b = a.rstrip(), b.rstrip()
+    n = 0
+    while n < min(len(a), len(b)) and a[-1 - n] == b[-1 - n]:
+        n += 1
+    tail = a[len(a) - n:] if n else ""
+    # Cut back to a word boundary: "for X" and "of X" share "r X"/"f X"
+    # only by accident of spelling, never more than the name itself.
+    if (n < len(a) and not a[len(a) - n - 1].isspace()) \
+            or (n < len(b) and not b[len(b) - n - 1].isspace()):
+        cut = tail.find(" ")
+        tail = tail[cut:] if cut >= 0 else ""
+    return tail.strip()
+
+
+def _mojo_title(card) -> Optional[str]:
+    """The property's name on a newer-layout card, or None.
+
+    That card never shows the name as text. It appears only inside the
+    screen-reader labels, wrapped in words that change with the storefront's
+    language: the gallery heading ("Photo gallery for X") and each image's
+    label ("Image of X"). So the name is read as the tail those two labels
+    SHARE, which needs no word list. None when the card has no image label
+    to compare with, rather than a guess.
+    """
+    heading = card.select_one("h3")
+    if heading is None:
+        return None
+    first = _text(heading)
+    others = [img.get("alt") or "" for img in card.select("img[alt]")]
+    others += [(n.get("aria-label") or "").split(",", 1)[-1]
+               for n in card.select('[data-stid="carousel-item"][aria-label*=","]')]
+    for other in others:
+        tail = _common_tail(first, other)
+        if len(tail) >= 2:
+            return tail
+    return None
+
+
 def _absolute(url: str, href: str) -> str:
     if not href:
         return ""
@@ -984,7 +1086,13 @@ def parse_products(html: str, url: str, page: int = 1,
     source = source_of(url)
     rows: List[Product] = []
 
-    for index, card in enumerate(soup.select(SELECTORS["item_card"]), start=1):
+    cards = soup.select(SELECTORS["item_card"])
+    # One card per property even if a future page nests one layout's wrapper
+    # inside the other's.
+    cards = [c for c in cards
+             if not any(p in cards for p in c.parents)]
+    for index, card in enumerate(cards, start=1):
+        mojo = _is_mojo(card)
         link = card.select_one('a[data-stid="open-product-information"]') \
             or card.select_one("a.uitk-card-link") \
             or card.select_one("a[href]")
@@ -998,7 +1106,11 @@ def parse_products(html: str, url: str, page: int = 1,
 
         amount, price_source, lines = _price_block(card)
         rating, scale = _rating(card)
-        summary, ptype, bedrooms, beds = _property_summary(card)
+        location_note = None
+        if mojo:
+            summary, ptype, bedrooms, beds, location_note = _mojo_summary(card)
+        else:
+            summary, ptype, bedrooms, beds = _property_summary(card)
 
         title_node = card.select_one(SELECTORS["card_title"])
         if title_node is None:
@@ -1006,12 +1118,15 @@ def parse_products(html: str, url: str, page: int = 1,
                 if "is-visually-hidden" not in (candidate.get("class") or []):
                     title_node = candidate
                     break
+        title = _text(title_node) or None
+        if title is None and mojo:
+            title = _mojo_title(card)
 
         rows.append(Product(
             source=source,
             url=clean or absolute,
             sku=sku_from_url(clean or absolute),
-            title=_text(title_node) or None,
+            title=title,
             price=amount,
             # The page's own ISO code where it states one, never a symbol
             # read off the tile, and null rather than a defaulted "USD" when
@@ -1036,13 +1151,14 @@ def parse_products(html: str, url: str, page: int = 1,
             bedrooms=bedrooms,
             beds=beds,
             location_note=_text(card.select_one(
-                SELECTORS["card_location_note"])) or None,
+                SELECTORS["card_location_note"])) or location_note,
             badges=_badges(card),
             amenities=_amenities(card),
             stay_dates=_stay_dates(lines),
             price_note=" | ".join(
                 line for line in lines
                 if line and not prices_in(line) and line != _stay_dates(lines)
+                and line.strip("·• ")
             ) or None,
             listing_kind="search",
         ))

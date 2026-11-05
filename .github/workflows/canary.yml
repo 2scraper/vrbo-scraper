@@ -14,8 +14,8 @@ name: canary
 #                runs from 2026-09-25 to 2026-10-15, but from 2026-10-23 on
 #                Expedia's handler mostly picks DataDome for a runner's
 #                address: blocked on all 7 dispatches of 2026-10-23 and on
-#                2026-11-02, served on 2026-10-26, and a 120 s re-try never
-#                cleared it. A DataDome pick cannot be solved without a proxy
+#                2026-11-02, served on 2026-10-26 and 2026-11-05; a 120 s
+#                re-try never cleared it. A DataDome pick cannot be solved without a proxy
 #                the browser exits through, so on exit 3 the job fetches
 #                page 1 once more through VRBO_PROXY, with the DataDome
 #                fallback armed (at most one solve, TWOCAPTCHA_KEY). It
