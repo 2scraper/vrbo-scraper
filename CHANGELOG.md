@@ -178,6 +178,37 @@ that is a fix, and the release notes lead with it.
   own sidecar (`proxy_budget_bytes`); its docstring said "of 10 MB" and now
   says so, and the canary checks cover a 15 MB run and a run with no cap.
 - CI only: the whole canary, free and paid jobs alike, now runs weekly (Mondays 06:20 UTC) and on a manual dispatch; the daily schedule is removed.
+- **A newer card layout is parsed.** On 2026-11-05 the canary's free path
+  (GitHub runner, headful real Chrome, no proxy) was served a grid whose
+  cards use a different wrapper. That page had 4 rendered cards, 6
+  placeholders under a new name and no visible property name. None of the
+  cards matched, so the page read as an unfilled shell and the run ended
+  with exit 5. Both layouts are parsed now, each by its own rule. On the
+  newer card, `title` is the tail that its gallery heading and image label
+  share; it is null when there is no image label. `property_type` is that
+  card's headline verbatim (`Apartment in Orlando`). Bedrooms and beds are
+  the first two segments of its summary row, and `location_note` is the row
+  under that. The grid's lazy-tail nudge recognises the new placeholder
+  name. A sanitized fixture of that capture (`LISTING_MOJO`) pins every
+  column of three of its cards.
+- **Canary `first-page` job: a second path when the free one is refused.**
+  It still tries the runner's own address first, with no proxy and no key.
+  From 2026-10-23 that address has mostly been answered with DataDome
+  (blocked on all 7 dispatches of 2026-10-23 and on 2026-11-02, served on
+  2026-10-26 and 2026-11-05), and a DataDome pick cannot be solved without a proxy that the
+  browser exits through, so on those runs the job went red without
+  testing the parser. Now, on exit 3, it fetches page 1 once more
+  through the `VRBO_PROXY` secret with the DataDome fallback armed (at most
+  one solve) and requires rows from that path instead. The step summary says
+  which path served page 1, and a refused free path is a warning, not a
+  silent pass. Without `VRBO_PROXY` a refused free path is still red. The
+  120 s re-try from the same address is gone: it cleared nothing on any of
+  those runs.
+- **Canary errors name the stop reason.** Both verdict steps print the
+  run's `stop_reason`. The `pagination` job's last two scheduled runs
+  (2026-10-26 and 2026-11-02) were the proxy gateway answering HTTP 407 at
+  the pre-check (`proxy_auth_failed`), which the job reported only as
+  "exited 5".
 
 ### Fixed
 

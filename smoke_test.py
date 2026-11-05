@@ -747,6 +747,60 @@ class _LazyTailGrid:
             self.height = 12837
 
 
+def test_newer_card_layout():
+    group("The newer card layout parses to the same columns (real capture, 2026-11-05)")
+    ok = True
+    from bs4 import BeautifulSoup
+    html = FIXTURES["LISTING_MOJO"]
+    url = URLS["LISTING_MOJO"]
+    ok &= check("it is content, not a shell",
+                product_parser.detect_page_state(html, 200, url) == "content")
+    rows = rows_of("LISTING_MOJO")
+    ok &= check(f"all four cards parse ({len(rows)})", len(rows) == 4)
+    by = {r.sku: r for r in rows}
+    want = {
+        # sku: (title, price, rating, reviews, type, bedrooms, beds, location)
+        "4204935": ("Foodie Lovers Walkable Mills50 - Sleeps 10", 229.0, 9.2,
+                    5, "House in Orlando", 2, 11, "Within Colonialtown South"),
+        "63925107": ("The Point Hotel & Suites Orlando", 81.0, 8.6, 1487,
+                     "Aparthotel in Orlando", 1, 2, "Within Florida Center"),
+        "3936140": ("\u26f2\ufe0fWalk to Lake Eola & restaurants", 148.0, 9.2,
+                    53, "Apartment in Orlando", 2, 4, "Within Thornton Park"),
+    }
+    for sku, (title, price, rating, reviews, ptype, br, beds, loc) in want.items():
+        r = by.get(sku)
+        got = None if r is None else (r.title, r.price, r.rating,
+                                      r.review_count, r.property_type,
+                                      r.bedrooms, r.beds, r.location_note)
+        ok &= check(f"{sku}: name read from the labels, every column right "
+                    f"({got})",
+                    got == (title, price, rating, reviews, ptype, br, beds, loc))
+    ok &= check("the amount comes from the rendered node, not the a11y line",
+                all(r.price_source == "card" for r in rows))
+    ok &= check("USD from the page, rating out of 10",
+                all(r.currency == "USD" and r.rating_scale == 10.0
+                    for r in rows))
+    ok &= check("no bare separator left in price_note",
+                all(r.price_note is None for r in rows))
+    ok &= check("expedia_property_id and the sponsored badge survive",
+                by["4204935"].expedia_property_id == "109065964"
+                and by["4204935"].badges == ["Ad"])
+    n = len(BeautifulSoup(html, "html.parser").select(
+        SELECTORS["grid_placeholder"]))
+    ok &= check(f"its own placeholders are seen, so the grid is nudged ({n})",
+                n == 6)
+    ok &= check("and its counter says 46 cards were owed",
+                page_flow.page_gap(html, len(rows)) == 46)
+    # Each layout's cards are read by its own rule: none of the classic
+    # fixtures changes because the newer one exists.
+    for name in ("LISTING_US", "LISTING_DE", "LISTING_AU", "LISTING_LAZY_TAIL"):
+        ok &= check(f"{name}: no card is read as the newer layout",
+                    not any(product_parser._is_mojo(c) for c in
+                            BeautifulSoup(FIXTURES[name], "html.parser")
+                            .select(SELECTORS["item_card"])))
+    return ok
+
+
 def test_grid_lazy_tail():
     group("A grid stopped at its lazy tail is scrolled back through (real capture)")
     ok = True
@@ -3681,14 +3735,18 @@ def test_canary_reports_proxy_traffic():
     for r in runs:
         code = "\n".join(line for line in r.splitlines()
                          if not line.lstrip().startswith("#"))
-        for out_ in re.findall(r"--out\s+(\S+)", code):
-            budgets[out_] = re.findall(r"--proxy-budget-mb\s+(\S+)", code)
+        # One step can hold more than one scrape (the first page's free path
+        # and its proxy fallback), so each invocation is read on its own.
+        for inv in re.split(r"(?<!\w)(?=\w+_scraper\.py)", code)[1:]:
+            for out_ in re.findall(r"--out\s+(\S+)", inv):
+                budgets[out_] = re.findall(r"--proxy-budget-mb\s+(\S+)", inv)
     # The walk carries three full pages and a paced retry of a throttled
     # turn: 8.7 MB for two pages measured 2026-10-22 with --block-media, so
-    # 15 there. The first page has no proxy and keeps the default 10.
+    # 15 there. The first page, on either path, keeps the default 10.
     ok &= check(f"every canary scrape passes one --proxy-budget-mb: the "
-                f"first page 10, the walk 15 ({budgets})",
-                budgets == {"canary_run": ["10"], "canary_walk": ["15"]})
+                f"first page 10 on both paths, the walk 15 ({budgets})",
+                budgets == {"canary_bare": ["10"], "canary_run": ["10"],
+                            "canary_walk": ["15"]})
     walk = [r for r in runs if "canary_walk" in r]
     ok &= check("the walk does not switch the throttle retry off",
                 bool(walk) and "--throttle-wait-seconds 0" not in walk[0])
@@ -4930,6 +4988,7 @@ def main() -> int:
     ok &= test_page_flow_policy()
     ok &= test_scroll_loop()
     ok &= test_grid_lazy_tail()
+    ok &= test_newer_card_layout()
     ok &= test_throttle_is_not_completion()
     ok &= test_throttle_retry()
     ok &= test_output_contract()

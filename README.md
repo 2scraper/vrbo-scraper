@@ -181,13 +181,23 @@ reads them unchanged.
 | `price`, `currency` | currency from the page's own ISO code, falling back to the host — never a defaulted `"USD"` |
 | `rating`, `rating_scale` | Vrbo rates out of **TEN**. The scale is its own column because the rest of this family publishes five-point ratings under the same name |
 | `review_count` | `1,299 reviews` and `1.614 bewertungen` are 1299 and 1614 |
-| `property_type`, `bedrooms`, `beds`, `property_summary` | the summary line split positionally; the raw line is kept beside it |
+| `property_type`, `bedrooms`, `beds`, `property_summary` | the summary line split positionally; the raw line is kept beside it. On the newer card layout (seen 2026-11-05) the type is that card's headline, verbatim: `Apartment in Orlando`, not `Apartment` |
 | `location_note` | usually a neighbourhood, sometimes `Kissimmee, 16.3 mi from Orlando` or `10 Min. Fahrt zum Strand`; the street address in `--mode property` |
 | `badges` | `Premier Host` and whatever joins it |
 | `amenities` | see the caveats below |
 | `stay_dates`, `price_note` | verbatim; see surprise #1 |
 | `price_source` | `card` / `card-a11y` / `detail` / `detail-a11y` |
 | `page`, `position` | the pair; `position` restarts per page |
+
+**Two card layouts.** On 2026-11-05 a canary run from a GitHub runner was
+served a newer card layout. Both layouts are parsed, one rule per layout.
+The newer card shows no name as text. `title` is read as the words its
+gallery heading and image label share ("Photo gallery for X", "Image of X"),
+and it is null when the card carries no image label. On that run the grid
+stopped at 4 of its 50 cards, with that layout's own loading placeholders
+under them. The scroll loop now recognises those placeholders too; whether
+they fill on a given run is reported in `cards_missing`, as for the classic
+layout.
 
 `sample_output.json` and `sample_output.csv` are cut from a real run
 (Orlando, 2026-11-14 → 2026-11-16, 2026-09-14).

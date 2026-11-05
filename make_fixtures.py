@@ -90,6 +90,11 @@ SITE_ERROR_SOURCE = ("vrbo_site_error_2026-10-07.html",
 # placeholders under them (canary, 2026-10-21, no proxy).
 LAZY_TAIL_SOURCE = ("vrbo_search_lazy_tail_stall_2026-10-21.html",
                     "https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=2026-12-05&endDate=2026-12-07&adults=2")
+# The newer card layout: 4 cards and 6 of that layout's own placeholders,
+# served to the canary's free path on 2026-11-05 (GitHub runner, headful real
+# Chrome, no proxy). Titles exist only in screen-reader labels on this layout.
+MOJO_SOURCE = ("vrbo_search_new_card_layout_2026-11-05.html",
+               "https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=2026-12-20&endDate=2026-12-22&adults=2")
 
 # A card that keeps the SLUG route must survive into LISTING_DE: it is the
 # fifth URL shape and only the local brands use it, so a fixture without one
@@ -108,6 +113,9 @@ SCRUB_PATTERNS = (
     (re.compile(r'("(?:exchangeHandshake|arkoseDataExchange|noncePrefix|deviceId)\\*"\s*:\s*\\*")[^"\\]{12,}'),
      r"\g<1>REDACTED"),
     (re.compile(r'<div class="captcha-debug-id">[^<]+</div>'), '<div class="captcha-debug-id">REDACTED</div>'),
+    # A card link's per-load search id. The parser strips it from `url`, so
+    # redacting it changes no column.
+    (re.compile(r'(searchId=)[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{27}'), r"\g<1>REDACTED"),
 )
 
 
@@ -275,7 +283,7 @@ def build_site_error(filename, url):
     return trimmed
 
 
-def build_lazy_tail(filename, url, keep=2):
+def build_lazy_tail(filename, url, keep=2, name="LISTING_LAZY_TAIL"):
     """A grid that stopped short: `keep` real cards and the lazy tail.
 
     Cut from a page that the scroll loop left at 13 of 50 cards with the
@@ -288,35 +296,44 @@ def build_lazy_tail(filename, url, keep=2):
     placeholders = soup.select(P.SELECTORS["grid_placeholder"])
     if not placeholders:
         raise SystemExit(f"{filename}: no grid placeholder — is this the stalled capture?")
-    tail = placeholders[0].parent
+    # Each placeholder's own block: its parent where that parent holds no
+    # card (the classic layout keeps them all in one such block), else the
+    # placeholder itself (the newer layout puts them beside the cards).
+    blocks = []
+    for ph in placeholders:
+        if any(ph is b or b in ph.parents for b in blocks):
+            continue
+        parent = ph.parent
+        blocks.append(ph if parent.select(P.SELECTORS["item_card"]) else parent)
+    tail = "".join(str(b) for b in blocks)
     cards = soup.select(P.SELECTORS["item_card"])[:keep]
     header = soup.select_one(P.RESULTS_HEADER_SELECTOR)
     pagination = soup.select_one(P.PAGINATION_SELECTOR)
     block = ((str(header) if header is not None else "")
              + '<div data-stid="property-listing-results">'
-             + "".join(str(c) for c in cards) + str(tail) + "</div>"
+             + "".join(str(c) for c in cards) + tail + "</div>"
              + (str(pagination) if pagination is not None else ""))
     trimmed = scrub(_head(soup, full) + block + "</body></html>")
     small = BeautifulSoup(trimmed, "html.parser")
     if len(small.select(P.SELECTORS["grid_placeholder"])) != len(placeholders):
-        raise SystemExit("LISTING_LAZY_TAIL: trimming changed the placeholder count")
+        raise SystemExit(f"{name}: trimming changed the placeholder count")
     want = {r.sku: asdict(r) for r in P.parse_products(full, url, page=1)}
     got = {r.sku: asdict(r) for r in P.parse_products(trimmed, url, page=1)}
     if len(got) != keep or set(got) - set(want):
-        raise SystemExit(f"LISTING_LAZY_TAIL: kept {len(got)} rows, not the {keep} cut")
+        raise SystemExit(f"{name}: kept {len(got)} rows, not the {keep} cut")
     for sku, row in got.items():
         for column, value in row.items():
             expected = want[sku][column]
             if isinstance(expected, str):
                 expected = scrub(expected)  # the rate-plan id is a long hex run
             if column not in ("scraped_at", "position") and expected != value:
-                raise SystemExit(f"LISTING_LAZY_TAIL: trimming changed {column!r} on {sku}")
+                raise SystemExit(f"{name}: trimming changed {column!r} on {sku}")
     if P.detect_page_state(trimmed, 200, url) != "content":
-        raise SystemExit("LISTING_LAZY_TAIL: trimmed fixture does not classify as content")
+        raise SystemExit(f"{name}: trimmed fixture does not classify as content")
     leftovers = re.findall(r"\b[0-9a-fA-F]{24,}\b|duaid", trimmed)
     if leftovers:
-        raise SystemExit(f"LISTING_LAZY_TAIL: session material left in: {leftovers[:3]}")
-    print(f"  LISTING_LAZY_TAIL: {len(full)} -> {len(trimmed)} bytes, "
+        raise SystemExit(f"{name}: session material left in: {leftovers[:3]}")
+    print(f"  {name}: {len(full)} -> {len(trimmed)} bytes, "
           f"{len(got)} rows and {len(placeholders)} placeholders")
     return trimmed
 
@@ -389,6 +406,9 @@ def main():
     urls["SITE_ERROR"] = SITE_ERROR_SOURCE[1]
     fixtures["LISTING_LAZY_TAIL"] = build_lazy_tail(*LAZY_TAIL_SOURCE)
     urls["LISTING_LAZY_TAIL"] = LAZY_TAIL_SOURCE[1]
+    fixtures["LISTING_MOJO"] = build_lazy_tail(*MOJO_SOURCE, keep=4,
+                                               name="LISTING_MOJO")
+    urls["LISTING_MOJO"] = MOJO_SOURCE[1]
     # Chromium's own answer when a proxy is dead. 39 bytes and no markup at
     # all — Playwright does not expose the interstitial, so this is what a
     # caller actually gets. It must classify as blocked, which is the
