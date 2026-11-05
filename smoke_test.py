@@ -3681,14 +3681,18 @@ def test_canary_reports_proxy_traffic():
     for r in runs:
         code = "\n".join(line for line in r.splitlines()
                          if not line.lstrip().startswith("#"))
-        for out_ in re.findall(r"--out\s+(\S+)", code):
-            budgets[out_] = re.findall(r"--proxy-budget-mb\s+(\S+)", code)
+        # One step can hold more than one scrape (the first page's free path
+        # and its proxy fallback), so each invocation is read on its own.
+        for inv in re.split(r"(?<!\w)(?=\w+_scraper\.py)", code)[1:]:
+            for out_ in re.findall(r"--out\s+(\S+)", inv):
+                budgets[out_] = re.findall(r"--proxy-budget-mb\s+(\S+)", inv)
     # The walk carries three full pages and a paced retry of a throttled
     # turn: 8.7 MB for two pages measured 2026-10-22 with --block-media, so
-    # 15 there. The first page has no proxy and keeps the default 10.
+    # 15 there. The first page, on either path, keeps the default 10.
     ok &= check(f"every canary scrape passes one --proxy-budget-mb: the "
-                f"first page 10, the walk 15 ({budgets})",
-                budgets == {"canary_run": ["10"], "canary_walk": ["15"]})
+                f"first page 10 on both paths, the walk 15 ({budgets})",
+                budgets == {"canary_bare": ["10"], "canary_run": ["10"],
+                            "canary_walk": ["15"]})
     walk = [r for r in runs if "canary_walk" in r]
     ok &= check("the walk does not switch the throttle retry off",
                 bool(walk) and "--throttle-wait-seconds 0" not in walk[0])

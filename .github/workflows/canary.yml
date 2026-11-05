@@ -8,14 +8,21 @@ name: canary
 #
 # A canary that did not reach the data does not end green. Two jobs:
 #
-#   first-page   No secret. Real Chrome, headful under xvfb, from the bare
-#                runner. Page 1 yielded rows to the runner on 14 of the 20
-#                scheduled runs from 2026-09-25 to 2026-10-15 (4 blocked, 1
-#                served the site's error page), so this job runs ungated and REQUIRES rows: a
-#                block (exit 3), a page served without its results (exit 5),
-#                zero rows or a parser shortfall is red. One re-run after a
-#                pause is allowed on exit 3, because the refusal here is a
-#                rate response that has been measured clearing.
+#   first-page   Page 1 of a dated search, real Chrome, headful under xvfb.
+#                It tries the FREE path first: the bare runner, no proxy, no
+#                key. Page 1 yielded rows that way on 14 of the 20 scheduled
+#                runs from 2026-09-25 to 2026-10-15, but from 2026-10-23 on
+#                Expedia's handler mostly picks DataDome for a runner's
+#                address: blocked on all 7 dispatches of 2026-10-23 and on
+#                2026-11-02, served on 2026-10-26, and a 120 s re-try never
+#                cleared it. A DataDome pick cannot be solved without a proxy
+#                the browser exits through, so on exit 3 the job fetches
+#                page 1 once more through VRBO_PROXY, with the DataDome
+#                fallback armed (at most one solve, TWOCAPTCHA_KEY). It
+#                REQUIRES rows from one of the two paths and says which one
+#                served them; a refused free path is a warning in the run
+#                summary, not a pass in disguise. Without VRBO_PROXY a
+#                refused free path is red, as before.
 #
 #   pagination   Needs the VRBO_PROXY secret, and FAILS naming it when the
 #                secret is absent. The page turn's data comes over POST
@@ -54,6 +61,12 @@ jobs:
   first-page:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # NOT named VRBO_PROXY / TWOCAPTCHA_KEY here: env_config.py reads those
+      # two from the environment, and the free-path attempt must run with
+      # neither. They are handed to the fallback invocation only.
+      FALLBACK_PROXY: ${{ secrets.VRBO_PROXY }}
+      FALLBACK_KEY: ${{ secrets.TWOCAPTCHA_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -70,45 +83,67 @@ jobs:
           playwright install --with-deps chrome
           sudo apt-get install -y --no-install-recommends xvfb
 
-      - name: Scrape page 1 of a dated search, from the bare runner
+      - name: Scrape page 1 of a dated search (free path, then VRBO_PROXY on a block)
         id: run
         # set +e so the exit code can be read; the verdict step decides.
+        # The fallback gets the credentials through its environment, never
+        # as flags: a credential on a command line is readable via `ps`.
         run: |
           set +e
           start=$(date -u -d '+45 days' +%F)
           end=$(date -u -d '+47 days' +%F)
           url="https://www.vrbo.com/search?destination=Orlando%2C%20Florida%2C%20United%20States%20of%20America&regionId=2693&sort=RECOMMENDED&startDate=${start}&endDate=${end}&adults=2"
           echo "Stay ${start} to ${end}"
-          for attempt in 1 2; do
-            xvfb-run -a python3 playwright_scraper.py --url "$url" \
-              --pages 1 --retries 4 --proxy-budget-mb 10 \
-              --out canary_run --dump-html canary_run.html
-            code=$?
-            [ "$code" != "3" ] && break
-            [ "$attempt" = "1" ] && echo "Blocked (exit 3); waiting 120s and trying once more." && sleep 120
-          done
+          xvfb-run -a env -u VRBO_PROXY -u TWOCAPTCHA_KEY python3 playwright_scraper.py --url "$url" \
+            --pages 1 --retries 4 --proxy-budget-mb 10 \
+            --out canary_bare --dump-html canary_bare.html
+          code=$?
+          prefix=canary_bare
+          path="runner address, no proxy"
+          if [ "$code" = "3" ]; then
+            echo "::warning::The free path (runner address, no proxy) was refused (exit 3; stop_reason in canary_bare.latest_attempt.meta.json). Fetching page 1 through VRBO_PROXY instead."
+            if [ -n "$FALLBACK_PROXY" ]; then
+              VRBO_PROXY="$FALLBACK_PROXY" TWOCAPTCHA_KEY="$FALLBACK_KEY" \
+                xvfb-run -a python3 playwright_scraper.py --url "$url" \
+                --pages 1 --retries 4 --proxy-budget-mb 10 --block-media \
+                --solve-captcha when-blocked \
+                --out canary_run --dump-html canary_run.html
+              code=$?
+              prefix=canary_run
+              path="VRBO_PROXY (free path refused)"
+            else
+              echo "::error::No VRBO_PROXY secret, so there is no second path to try."
+            fi
+          fi
+          echo "Page 1 path: ${path}, exit ${code}" >> "$GITHUB_STEP_SUMMARY"
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
 
-      - name: Proxy traffic of the first-page run
-        # No proxy in this job, so this normally reads "not metered"; it is
-        # here so a proxy added to this job later is metered and capped too.
+      - name: Proxy traffic of the first-page runs
+        # The free path reads "not metered"; the VRBO_PROXY fallback, when it
+        # ran, is metered and capped. A run that did not happen is reported
+        # as having no sidecar, which is not a failure here.
         if: ${{ !cancelled() }}
-        run: python3 .github/proxy_traffic.py "first-page" canary_run
+        run: |
+          python3 .github/proxy_traffic.py first-page-free-path canary_bare
+          python3 .github/proxy_traffic.py first-page-via-proxy canary_run
 
       - name: Require rows
         run: |
           code="${{ steps.run.outputs.exit_code }}"
+          prefix="${{ steps.run.outputs.prefix }}"
+          reason=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("stop_reason") or "-")' "${prefix}.latest_attempt.meta.json" 2>/dev/null || echo "-")
           case "$code" in
-            0) echo "Rows written; checking them next." ;;
-            3) echo "::error::Blocked (exit 3) twice from the runner's address. Nothing was tested today. Page 1 usually yields rows to a runner (14 of 20 scheduled runs, 2026-09-25 to 10-15); if this repeats, the refusal has changed." ; exit 1 ;;
+            0) echo "Rows written by ${prefix}; checking them next." ;;
+            3) echo "::error::Blocked (exit 3, stop_reason ${reason}) on every path tried. Nothing was tested today. captcha_attempts in ${prefix}.latest_attempt.meta.json says whether a DataDome answer was bought and refused." ; exit 1 ;;
             4) echo "::error::Exit 4: the site's own no-results answer for a dated Orlando search, which holds dozens of properties. Read the HTML dump in the artefacts." ; exit 1 ;;
-            5) echo "::error::Exit 5: page 1 was not obtained (load failure, a page served without its results such as the site's own error copy, or a grid the parser read as 0 rows). The sidecar is not written on a failed run; the debug dump in the artefacts shows what the browser had." ; exit 1 ;;
+            5) echo "::error::Exit 5 (stop_reason ${reason}): page 1 was not obtained (a refused proxy credential, a load failure, a page served without its results such as the site's own error copy, or a grid the parser read as 0 rows). The debug dump in the artefacts shows what the browser had." ; exit 1 ;;
             6) echo "::error::Exit 6 on a one-page run: the page was partial. See cards_missing in the sidecar." ; exit 1 ;;
             *) echo "::error::Unexpected exit code $code (see the step above)." ; exit 1 ;;
           esac
 
       - name: Check the parser on what was served
-        run: python3 .github/canary_check.py --prefix canary_run --pages 1
+        run: python3 .github/canary_check.py --prefix "${{ steps.run.outputs.prefix }}" --pages 1
 
       - name: Upload run artifacts
         if: always()
@@ -116,6 +151,12 @@ jobs:
         with:
           name: canary-first-page-${{ github.run_id }}
           path: |
+            canary_bare.json
+            canary_bare.csv
+            canary_bare.meta.json
+            canary_bare.latest_attempt.meta.json
+            canary_bare.html*
+            canary_bare_page*_debug.*
             canary_run.json
             canary_run.csv
             canary_run.meta.json
@@ -203,8 +244,9 @@ jobs:
       - name: Require a complete walk
         run: |
           code="${{ steps.run.outputs.exit_code }}"
+          reason=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("stop_reason") or "-")' canary_walk.latest_attempt.meta.json 2>/dev/null || echo "-")
           if [ "$code" != "0" ]; then
-            echo "::error::The three-page walk through VRBO_PROXY exited $code (3 blocked, 5 not obtained, 6 partial: see stop_reason in canary_walk.meta.json). Pagination was not verified."
+            echo "::error::The three-page walk through VRBO_PROXY exited $code, stop_reason ${reason} (3 blocked, 5 not obtained, 6 partial; proxy_auth_failed is the gateway refusing VRBO_PROXY's credential or an exhausted traffic balance). Pagination was not verified."
             exit 1
           fi
 

@@ -92,9 +92,13 @@ history needs a decision, not a red check on every push.
 Then the rest of the presentation, in the order that matters:
 
 1. `python3 smoke_test.py` green, and the canary dispatched at least once.
-   It has two jobs. `first-page` needs no secret: it installs real Chrome,
-   runs it headful from the bare runner, and fails unless page 1 yields rows
-   that pass `.github/canary_check.py`. `pagination` walks three pages and
+   It has two jobs. `first-page` installs real Chrome and runs it headful,
+   first from the bare runner with no proxy and no key. When that free path
+   is refused (exit 3), it fetches page 1 once more through the `VRBO_PROXY`
+   secret, with the DataDome fallback armed (at most one solve). It fails
+   unless page 1 yields rows that pass `.github/canary_check.py` on one of
+   the two paths, and the run summary names the path that served them.
+   `pagination` walks three pages and
    needs a `VRBO_PROXY` secret, because from a runner's address the page
    turn's `/graphql` POST was answered HTTP 429 on all 13 scheduled runs that
    pressed next (2026-09-25 to 10-15); without the secret that job
