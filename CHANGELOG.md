@@ -170,6 +170,8 @@ that is a fix, and the release notes lead with it.
 
 ### Changed
 
+- CI only: the offline-checks job runs on `ubuntu-24.04` instead of `ubuntu-latest`, which moved to Ubuntu 26.04, where `actions/setup-python` has no Python 3.9 build. 3.9 stays the supported floor.
+- Docker: the image installs `libatomic1` before Playwright. Recent Playwright releases' Node driver needs it to run `playwright install` at all, and the slim base image does not ship it, so the image build failed.
 - CI only: the canary's three-page walk through `VRBO_PROXY` passes
   `--proxy-budget-mb 15`; the scraper's default stays 10. With
   `--block-media` the 2026-10-22 walk used 8.7 MB for pages 1 and 2 at 50 of
